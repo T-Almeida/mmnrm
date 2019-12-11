@@ -50,11 +50,8 @@ class MatrixInteractionMasking(MatrixInteraction):
     
 class ExactInteractions(MatrixInteractionMasking): 
     
-    def __init__(self, 
-                 use_term_importace=False,
-                 **kwargs):
+    def __init__(self, **kwargs):
         super(ExactInteractions, self).__init__(**kwargs)
-        self.use_term_importace = use_term_importace
     
     def call(self, x):
         """
@@ -65,17 +62,23 @@ class ExactInteractions(MatrixInteractionMasking):
             x[3] - sentence vector with term importances (TF-IDF)
         """
         
+        assert(len(x) in [2,4]) # sanity check
+        
         mask = self.compute_mask(x)
         
         query_matrix, sentence_matrix = self._query_sentence_vector_to_matrices(x[0], x[1])
         
         interaction_matrix = K.cast(K.equal(query_matrix, sentence_matrix), dtype=self.dtype) * mask
         
-        if self.use_term_importace:
-            query_importance_matrix, setence_importance_matrix = self._query_sentence_vector_to_matrices(x[2], x[3])
+        if len(x)==4:
+            query_importance_matrix, sentence_importance_matrix = self._query_sentence_vector_to_matrices(x[2], x[3])
             
-            interaction_matrix = K.expand_dims(interaction_matrix)
-            interaction_matrix = K.concatenate([interaction_matrix, query_importance_matrix, setence_importance_matrix])
+            query_importance_matrix = query_importance_matrix * mask
+            sentence_importance_matrix = sentence_importance_matrix * mask
+            
+            interaction_matrix = K.concatenate([K.expand_dims(interaction_matrix),
+                                                K.expand_dims(query_importance_matrix),
+                                                K.expand_dims(sentence_importance_matrix)])
         
         return interaction_matrix
     
