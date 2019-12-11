@@ -16,7 +16,20 @@ class MatrixInteraction(tf.keras.layers.Layer):
         self.query_max_elements = input_shape[0][1]
         self.setence_max_elements = input_shape[1][1]
         
-        super(MatrixInteraction, self).build(input_shape) 
+        super(MatrixInteraction, self).build(input_shape)
+        
+    def _query_sentence_vector_to_matrices(self, query_vector, sentence_vector):
+        """
+        Auxiliar function that will replicate each vector in order to procude a matrix with size [B,Q,S]
+        where B is batch dimension, Q max terms in the query and S max terms in the sentence
+        """
+        query_matrix = K.expand_dims(query_vector, axis=2)
+        query_matrix = K.repeat_elements(query_matrix, self.setence_max_elements, axis=2)
+        
+        sentence_matrix = K.expand_dims(sentence_vector, axis=1)
+        sentence_matrix = K.repeat_elements(sentence_matrix, self.query_max_elements, axis=1)
+        
+        return query_matrix, sentence_matrix
 
 class MatrixInteractionMasking(MatrixInteraction):
     """
@@ -37,21 +50,37 @@ class MatrixInteractionMasking(MatrixInteraction):
     
 class ExactInteractions(MatrixInteractionMasking): 
     
+    def __init__(self, **kwargs):
+        super(ExactInteractions, self).__init__(**kwargs)
+    
     def call(self, x):
         """
         x[0] - padded query tokens id's
         x[1] - padded sentence tokens id's
+        if use_term_importace
+            x[2] - query vector with term importances (TF-IDF)
+            x[3] - sentence vector with term importances (TF-IDF)
         """
+        
+        assert(len(x) in [2,4]) # sanity check
         
         mask = self.compute_mask(x)
         
-        query_matrix = K.expand_dims(x[0], axis=2)
-        query_matrix = K.repeat_elements(query_matrix, self.setence_max_elements, axis=2)
+        query_matrix, sentence_matrix = self._query_sentence_vector_to_matrices(x[0], x[1])
         
-        sentence_matrix = K.expand_dims(x[1], axis=1)
-        sentence_matrix = K.repeat_elements(sentence_matrix, self.query_max_elements, axis=1)
+        interaction_matrix = K.cast(K.equal(query_matrix, sentence_matrix), dtype=self.dtype) * mask
         
-        return K.cast(K.equal(query_matrix, sentence_matrix), dtype=self.dtype) * mask
+        if len(x)==4:
+            query_importance_matrix, sentence_importance_matrix = self._query_sentence_vector_to_matrices(x[2], x[3])
+            
+            query_importance_matrix = query_importance_matrix * mask
+            sentence_importance_matrix = sentence_importance_matrix * mask
+            
+            interaction_matrix = K.concatenate([K.expand_dims(interaction_matrix),
+                                                K.expand_dims(query_importance_matrix),
+                                                K.expand_dims(sentence_importance_matrix)])
+        
+        return interaction_matrix
     
 
 class SemanticInteractions(MatrixInteractionMasking):
@@ -112,11 +141,10 @@ class SemanticInteractions(MatrixInteractionMasking):
             query_projection = K.dot(query_embeddings, self.query_w)
             sentence_projection = K.dot(sentence_embeddings, self.sentence_w)
             
-            query_projection_matrix = K.expand_dims(query_projection, axis=2)
-            query_projection_matrix = K.repeat_elements(query_projection_matrix, self.setence_max_elements, axis=2) * mask
-
-            sentence_projection_matrix = K.expand_dims(sentence_projection, axis=1)
-            sentence_projection_matrix = K.repeat_elements(sentence_projection_matrix, self.query_max_elements, axis=1) * mask
+            query_projection_matrix, sentence_projection_matrix = self._query_sentence_vector_to_matrices(query_projection, sentence_projection) 
+            
+            query_projection_matrix = query_projection_matrix * mask
+            sentence_projection_matrix = sentence_projection_matrix * mask
             
             interaction_matrix = K.expand_dims(interaction_matrix)
             interaction_matrix = K.concatenate([interaction_matrix, query_projection_matrix, sentence_projection_matrix])
