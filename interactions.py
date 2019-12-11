@@ -151,5 +151,86 @@ class SemanticInteractions(MatrixInteractionMasking):
         
         return interaction_matrix
 
-class ContextedSemanticInteractions(tf.keras.layers.Layer):
-    pass
+class ContextedSemanticInteractions(MatrixInteractionMasking):
+    
+    def __init__(self, 
+                 context_embedding_layer = None,
+                 context_embedding_dim = None, # used to compute the term importance of each query and sentence token
+                 learn_term_weights=True,
+                 initializer='glorot_uniform',
+                 regularizer=None,
+                 **kwargs):
+        
+        super(ContextedSemanticInteractions, self).__init__(**kwargs)
+
+        self.context_embedding_layer = context_embedding_layer
+        self.context_embedding_dim = context_embedding_dim
+        self.initializer = initializer
+        self.regularizer = regularizer
+        
+    def build(self, input_shape):
+        
+        # add some weight that will learn term importance projection of the query and sentence embeddings
+        if self.context_embedding_dim is not None:
+            self.query_w = self.add_weight(name="query_w",
+                                           shape=(self.context_embedding_dim, 1),
+                                           initializer=self.initializer,
+                                           regularizer=self.regularizer,
+                                           trainable=True)
+            
+            self.sentence_w = self.add_weight(name="sentence_w",
+                                              shape=(self.context_embedding_dim, 1),
+                                              initializer=self.initializer,
+                                              regularizer=self.regularizer,
+                                              trainable=True)
+        
+        super(ContextedSemanticInteractions, self).build(input_shape)
+        
+    def _produce_context_embeddings(self, query_vector, sentence_vector):
+        raise NotImplementedError("Missing implementation of the function _produce_context_embeddings",)
+        
+    def call(self, x, mask=None):
+        """
+        x[0] - padded query tokens id's
+        x[1] - padded sentence tokens id's
+        
+        or 
+        
+        For this setting the mask is needed
+        x[0] - padded query context embeddings
+        x[1] - padded sentence context embeddings
+        
+        or
+        
+        For this setting the mask is needed
+        x    - pre-computed similarity matrix
+        """
+        
+        if mask is None:
+            mask = self.compute_mask(x)
+        
+        if self.context_embedding_layer is not None:
+            query_context_embeddings, sentence_context_embeddings = self._produce_context_embeddings(x[0], x[1]) 
+        else:
+            query_context_embeddings, sentence_context_embeddings = (x[0],x[1])
+            
+        if len(x)==2:
+            interaction_matrix = tf.einsum("bqe,bde->bqd", query_embeddings, sentence_embeddings) * mask
+        else:
+            interaction_matrix = x * mask
+        
+        if self.context_embedding_dim is not None:
+            mask = K.expand_dims(mask) # TODO check the rank of the tensor before expand??
+            
+            query_context_embeddings = K.dot(query_context_embeddings, self.query_w)
+            sentence_context_embeddings = K.dot(sentence_context_embeddings, self.sentence_w)
+            
+            query_projection_matrix, sentence_projection_matrix = self._query_sentence_vector_to_matrices(query_context_embeddings, sentence_context_embeddings) 
+            
+            query_projection_matrix = query_projection_matrix * mask
+            sentence_projection_matrix = sentence_projection_matrix * mask
+            
+            interaction_matrix = K.expand_dims(interaction_matrix)
+            interaction_matrix = K.concatenate([interaction_matrix, query_projection_matrix, sentence_projection_matrix])
+        
+        return interaction_matrix
