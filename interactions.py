@@ -155,8 +155,10 @@ class ContextedSemanticInteractions(MatrixInteractionMasking):
     
     def __init__(self, 
                  context_embedding_layer = None,
+                 cls_token_id = None,
+                 sep_token_id = None,
+                 pad_token_id = None,
                  context_embedding_dim = None, # used to compute the term importance of each query and sentence token
-                 learn_term_weights=True,
                  initializer='glorot_uniform',
                  regularizer=None,
                  **kwargs):
@@ -165,6 +167,9 @@ class ContextedSemanticInteractions(MatrixInteractionMasking):
 
         self.context_embedding_layer = context_embedding_layer
         self.context_embedding_dim = context_embedding_dim
+        self.cls_token_id = cls_token_id
+        self.sep_token_id = sep_token_id
+        self.pad_token_id = pad_token_id
         self.initializer = initializer
         self.regularizer = regularizer
         
@@ -187,7 +192,22 @@ class ContextedSemanticInteractions(MatrixInteractionMasking):
         super(ContextedSemanticInteractions, self).build(input_shape)
         
     def _produce_context_embeddings(self, query_vector, sentence_vector):
-        raise NotImplementedError("Missing implementation of the function _produce_context_embeddings",)
+        # assume transformer layer follows a BERT architecture
+        assert(self.cls_token_id is not None and self.sep_token_id is not None and self.pad_token_id is not None)
+        
+        batch_dim = tf.shape(query_vector)[0]
+        
+        cls_input = K.expand_dims(tf.ones((batch_dim,), dtype="int32")*tf.constant(self.cls_token_id))
+        sep_input = K.expand_dims(tf.ones((batch_dim,), dtype="int32")*tf.constant(self.sep_token_id))
+        
+        _input = K.concatenate([cls_input, query_vector, sep_input, sentence_vector, sep_input])
+
+        _out = self.context_embedding_layer(_input)
+
+        context_query = _out[:,1:self.query_max_elements+1,:]
+        context_sentence = _out[:,self.query_max_elements+2:self.query_max_elements+2+self.setence_max_elements,:]
+        
+        return context_query, context_sentence
         
     def call(self, x, mask=None):
         """
@@ -203,7 +223,7 @@ class ContextedSemanticInteractions(MatrixInteractionMasking):
         or
         
         For this setting the mask is needed
-        x    - pre-computed similarity matrix
+        x    - pre-computed similarity matrix, dims (B,Q,D)
         """
         
         if mask is None:
@@ -215,7 +235,7 @@ class ContextedSemanticInteractions(MatrixInteractionMasking):
             query_context_embeddings, sentence_context_embeddings = (x[0],x[1])
             
         if len(x)==2:
-            interaction_matrix = tf.einsum("bqe,bde->bqd", query_embeddings, sentence_embeddings) * mask
+            interaction_matrix = tf.einsum("bqe,bde->bqd", query_context_embeddings, sentence_context_embeddings) * mask
         else:
             interaction_matrix = x * mask
         
