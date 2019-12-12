@@ -151,5 +151,106 @@ class SemanticInteractions(MatrixInteractionMasking):
         
         return interaction_matrix
 
-class ContextedSemanticInteractions(tf.keras.layers.Layer):
-    pass
+class ContextedSemanticInteractions(MatrixInteractionMasking):
+    
+    def __init__(self, 
+                 context_embedding_layer = None,
+                 cls_token_id = None,
+                 sep_token_id = None,
+                 pad_token_id = None,
+                 context_embedding_dim = None, # used to compute the term importance of each query and sentence token
+                 initializer='glorot_uniform',
+                 regularizer=None,
+                 **kwargs):
+        
+        super(ContextedSemanticInteractions, self).__init__(**kwargs)
+
+        self.context_embedding_layer = context_embedding_layer
+        self.context_embedding_dim = context_embedding_dim
+        self.cls_token_id = cls_token_id
+        self.sep_token_id = sep_token_id
+        self.pad_token_id = pad_token_id
+        self.initializer = initializer
+        self.regularizer = regularizer
+        
+    def build(self, input_shape):
+        
+        # add some weight that will learn term importance projection of the query and sentence embeddings
+        if self.context_embedding_dim is not None:
+            self.query_w = self.add_weight(name="query_w",
+                                           shape=(self.context_embedding_dim, 1),
+                                           initializer=self.initializer,
+                                           regularizer=self.regularizer,
+                                           trainable=True)
+            
+            self.sentence_w = self.add_weight(name="sentence_w",
+                                              shape=(self.context_embedding_dim, 1),
+                                              initializer=self.initializer,
+                                              regularizer=self.regularizer,
+                                              trainable=True)
+        
+        super(ContextedSemanticInteractions, self).build(input_shape)
+        
+    def _produce_context_embeddings(self, query_vector, sentence_vector):
+        # assume transformer layer follows a BERT architecture
+        assert(self.cls_token_id is not None and self.sep_token_id is not None and self.pad_token_id is not None)
+        
+        batch_dim = tf.shape(query_vector)[0]
+        
+        cls_input = K.expand_dims(tf.ones((batch_dim,), dtype="int32")*tf.constant(self.cls_token_id))
+        sep_input = K.expand_dims(tf.ones((batch_dim,), dtype="int32")*tf.constant(self.sep_token_id))
+        
+        _input = K.concatenate([cls_input, query_vector, sep_input, sentence_vector, sep_input])
+
+        _out = self.context_embedding_layer(_input)
+
+        context_query = _out[:,1:self.query_max_elements+1,:]
+        context_sentence = _out[:,self.query_max_elements+2:self.query_max_elements+2+self.setence_max_elements,:]
+        
+        return context_query, context_sentence
+        
+    def call(self, x, mask=None):
+        """
+        x[0] - padded query tokens id's
+        x[1] - padded sentence tokens id's
+        
+        or 
+        
+        For this setting the mask is needed
+        x[0] - padded query context embeddings
+        x[1] - padded sentence context embeddings
+        
+        or
+        
+        For this setting the mask is needed
+        x    - pre-computed similarity matrix, dims (B,Q,D)
+        """
+        
+        if mask is None:
+            mask = self.compute_mask(x)
+        
+        if self.context_embedding_layer is not None:
+            query_context_embeddings, sentence_context_embeddings = self._produce_context_embeddings(x[0], x[1]) 
+        else:
+            query_context_embeddings, sentence_context_embeddings = (x[0],x[1])
+            
+        if len(x)==2:
+            interaction_matrix = tf.einsum("bqe,bde->bqd", query_context_embeddings, sentence_context_embeddings) * mask
+        else:
+            interaction_matrix = x * mask
+        
+        if self.context_embedding_dim is not None:
+            mask = K.expand_dims(mask) # TODO check the rank of the tensor before expand??
+            
+            query_context_embeddings = K.dot(query_context_embeddings, self.query_w)
+            sentence_context_embeddings = K.dot(sentence_context_embeddings, self.sentence_w)
+            
+            query_projection_matrix, sentence_projection_matrix = self._query_sentence_vector_to_matrices(query_context_embeddings, sentence_context_embeddings) 
+            
+            query_projection_matrix = query_projection_matrix * mask
+            sentence_projection_matrix = sentence_projection_matrix * mask
+            
+            interaction_matrix = K.expand_dims(interaction_matrix)
+            interaction_matrix = K.concatenate([interaction_matrix, query_projection_matrix, sentence_projection_matrix])
+        
+        return interaction_matrix
