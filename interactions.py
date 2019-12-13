@@ -90,6 +90,7 @@ class SemanticInteractions(MatrixInteractionMasking):
                  learn_term_weights=True,
                  initializer='glorot_uniform',
                  regularizer=None,
+                 return_embeddings = False,
                  **kwargs):
         
         super(SemanticInteractions, self).__init__(**kwargs)
@@ -149,7 +150,10 @@ class SemanticInteractions(MatrixInteractionMasking):
             interaction_matrix = K.expand_dims(interaction_matrix)
             interaction_matrix = K.concatenate([interaction_matrix, query_projection_matrix, sentence_projection_matrix])
         
-        return interaction_matrix
+        if return_embeddings:
+            return interaction_matrix, query_embeddings, sentence_embeddings
+        else:
+            return interaction_matrix
 
 class ContextedSemanticInteractions(MatrixInteractionMasking):
     
@@ -161,6 +165,7 @@ class ContextedSemanticInteractions(MatrixInteractionMasking):
                  learn_term_weights = False,
                  initializer='glorot_uniform',
                  regularizer=None,
+                 return_embeddings = False,
                  **kwargs):
         
         super(ContextedSemanticInteractions, self).__init__(**kwargs)
@@ -265,4 +270,7 @@ class ContextedSemanticInteractions(MatrixInteractionMasking):
         else:
             raise NotImplementedError("Missing implmentation when input has len", len(x))
         
-        return interaction_matrix
+        if return_embeddings:
+            return interaction_matrix, query_context_embeddings, sentence_context_embeddings
+        else:
+            return interaction_matrix
