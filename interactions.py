@@ -158,7 +158,7 @@ class ContextedSemanticInteractions(MatrixInteractionMasking):
                  cls_token_id = None,
                  sep_token_id = None,
                  pad_token_id = None,
-                 context_embedding_dim = None, # used to compute the term importance of each query and sentence token
+                 learn_term_weights = False,
                  initializer='glorot_uniform',
                  regularizer=None,
                  **kwargs):
@@ -166,7 +166,7 @@ class ContextedSemanticInteractions(MatrixInteractionMasking):
         super(ContextedSemanticInteractions, self).__init__(**kwargs)
 
         self.context_embedding_layer = context_embedding_layer
-        self.context_embedding_dim = context_embedding_dim
+        self.learn_term_weights = learn_term_weights
         self.cls_token_id = cls_token_id
         self.sep_token_id = sep_token_id
         self.pad_token_id = pad_token_id
@@ -176,15 +176,22 @@ class ContextedSemanticInteractions(MatrixInteractionMasking):
     def build(self, input_shape):
         
         # add some weight that will learn term importance projection of the query and sentence embeddings
-        if self.context_embedding_dim is not None:
+        if self.learn_term_weights:
+            assert(len(input_shape)==2)  # sanity check
+            
+            if self.context_embedding_layer is not None:
+                embedding_dim = self.context_embedding_layer.output.shape[-1]
+            else:
+                embedding_dim = input_shape[-1] # TODO validate this may be necessary to convert into integer
+            
             self.query_w = self.add_weight(name="query_w",
-                                           shape=(self.context_embedding_dim, 1),
+                                           shape=(embedding_dim, 1),
                                            initializer=self.initializer,
                                            regularizer=self.regularizer,
                                            trainable=True)
             
             self.sentence_w = self.add_weight(name="sentence_w",
-                                              shape=(self.context_embedding_dim, 1),
+                                              shape=(embedding_dim, 1),
                                               initializer=self.initializer,
                                               regularizer=self.regularizer,
                                               trainable=True)
@@ -203,7 +210,7 @@ class ContextedSemanticInteractions(MatrixInteractionMasking):
         _input = K.concatenate([cls_input, query_vector, sep_input, sentence_vector, sep_input])
 
         _out = self.context_embedding_layer(_input)
-
+        
         context_query = _out[:,1:self.query_max_elements+1,:]
         context_sentence = _out[:,self.query_max_elements+2:self.query_max_elements+2+self.setence_max_elements,:]
         
@@ -225,32 +232,37 @@ class ContextedSemanticInteractions(MatrixInteractionMasking):
         For this setting the mask is needed
         x    - pre-computed similarity matrix, dims (B,Q,D)
         """
-        
-        if mask is None:
-            mask = self.compute_mask(x)
-        
-        if self.context_embedding_layer is not None:
-            query_context_embeddings, sentence_context_embeddings = self._produce_context_embeddings(x[0], x[1]) 
-        else:
-            query_context_embeddings, sentence_context_embeddings = (x[0],x[1])
-            
-        if len(x)==2:
-            interaction_matrix = tf.einsum("bqe,bde->bqd", query_context_embeddings, sentence_context_embeddings) * mask
-        else:
+
+        if len(x)==1:
+            # precomputed matrix
+            assert mask is not None
             interaction_matrix = x * mask
-        
-        if self.context_embedding_dim is not None:
-            mask = K.expand_dims(mask) # TODO check the rank of the tensor before expand??
+        elif len(x)==2:
+            mask = self.compute_mask(x)
             
-            query_context_embeddings = K.dot(query_context_embeddings, self.query_w)
-            sentence_context_embeddings = K.dot(sentence_context_embeddings, self.sentence_w)
+            # get query and sentence context embeddings
+            if self.context_embedding_layer is not None:
+                query_context_embeddings, sentence_context_embeddings = self._produce_context_embeddings(x[0], x[1]) 
+            else:
+                query_context_embeddings, sentence_context_embeddings = (x[0],x[1])
+                
+            interaction_matrix = tf.einsum("bqe,bde->bqd", query_context_embeddings, sentence_context_embeddings) * mask
             
-            query_projection_matrix, sentence_projection_matrix = self._query_sentence_vector_to_matrices(query_context_embeddings, sentence_context_embeddings) 
+            if self.learn_term_weights:
+                mask = K.expand_dims(mask) # TODO check the rank of the tensor before expand??
+
+                query_context_embeddings = K.dot(query_context_embeddings, self.query_w)
+                sentence_context_embeddings = K.dot(sentence_context_embeddings, self.sentence_w)
+
+                query_projection_matrix, sentence_projection_matrix = self._query_sentence_vector_to_matrices(query_context_embeddings, sentence_context_embeddings) 
+
+                query_projection_matrix = query_projection_matrix * mask
+                sentence_projection_matrix = sentence_projection_matrix * mask
+
+                interaction_matrix = K.expand_dims(interaction_matrix)
+                interaction_matrix = K.concatenate([interaction_matrix, query_projection_matrix, sentence_projection_matrix])
             
-            query_projection_matrix = query_projection_matrix * mask
-            sentence_projection_matrix = sentence_projection_matrix * mask
-            
-            interaction_matrix = K.expand_dims(interaction_matrix)
-            interaction_matrix = K.concatenate([interaction_matrix, query_projection_matrix, sentence_projection_matrix])
+        else:
+            raise NotImplementedError("Missing implmentation when input has len", len(x))
         
         return interaction_matrix
