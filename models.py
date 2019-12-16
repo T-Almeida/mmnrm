@@ -6,7 +6,7 @@ from local_relevance import MultipleNgramConvs, MaskedSoftmax
 from transformations import MaskedConcatenate
 
 
-def build_PACCR(max_q_length,
+def build_PACRR(max_q_length,
                 max_d_length,
                 emb_matrix,
                 max_ngram = 3,
