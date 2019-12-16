@@ -45,7 +45,7 @@ class MatrixInteractionMasking(MatrixInteraction):
         query_mask = K.cast(K.not_equal(x[0], self.mask_value), dtype=self.dtype)
         document_mask = K.cast(K.not_equal(x[1], self.mask_value), dtype=self.dtype)
         
-        return tf.einsum("bq,bd->bqd", query_mask, document_mask)
+        return K.cast(tf.einsum("bq,bd->bqd", query_mask, document_mask), dtype="bool")
     
     
 class ExactInteractions(MatrixInteractionMasking): 
@@ -64,7 +64,7 @@ class ExactInteractions(MatrixInteractionMasking):
         
         assert(len(x) in [2,4]) # sanity check
         
-        mask = self.compute_mask(x)
+        mask = K.cast(self.compute_mask(x), dtype=self.dtype)
         
         query_matrix, sentence_matrix = self._query_sentence_vector_to_matrices(x[0], x[1])
         
@@ -101,6 +101,7 @@ class SemanticInteractions(MatrixInteractionMasking):
         self.learn_term_weights = learn_term_weights
         self.initializer = initializer
         self.regularizer = regularizer
+        self.return_embeddings = return_embeddings
         print("[EMBEDDING MATRIX SHAPE]", embedding_matrix.shape)
     
     def build(self, input_shape):
@@ -128,7 +129,7 @@ class SemanticInteractions(MatrixInteractionMasking):
         x[1] - padded sentence tokens id's
         """
         
-        mask = self.compute_mask(x)
+        mask = K.cast(self.compute_mask(x), dtype=self.dtype)
         
         # embbed the tokens
         query_embeddings = tf.nn.embedding_lookup(self.embeddings, x[0])
@@ -150,7 +151,7 @@ class SemanticInteractions(MatrixInteractionMasking):
             interaction_matrix = K.expand_dims(interaction_matrix)
             interaction_matrix = K.concatenate([interaction_matrix, query_projection_matrix, sentence_projection_matrix])
         
-        if return_embeddings:
+        if self.return_embeddings:
             return interaction_matrix, query_embeddings, sentence_embeddings
         else:
             return interaction_matrix
@@ -177,6 +178,7 @@ class ContextedSemanticInteractions(MatrixInteractionMasking):
         self.pad_token_id = pad_token_id
         self.initializer = initializer
         self.regularizer = regularizer
+        self.return_embeddings = return_embeddings
         
     def build(self, input_shape):
         
@@ -243,7 +245,7 @@ class ContextedSemanticInteractions(MatrixInteractionMasking):
             assert mask is not None
             interaction_matrix = x * mask
         elif len(x)==2:
-            mask = self.compute_mask(x)
+            mask = K.cast(self.compute_mask(x), dtype=self.dtype)
             
             # get query and sentence context embeddings
             if self.context_embedding_layer is not None:
@@ -270,7 +272,7 @@ class ContextedSemanticInteractions(MatrixInteractionMasking):
         else:
             raise NotImplementedError("Missing implmentation when input has len", len(x))
         
-        if return_embeddings:
+        if self.return_embeddings:
             return interaction_matrix, query_context_embeddings, sentence_context_embeddings
         else:
             return interaction_matrix
