@@ -15,7 +15,7 @@ class DocumentFixWindowSplit(tf.keras.layers.Layer):
     def call(self, x):
         return tf.transpose(tf.split(x, self.num_splites, axis=1), perm=[1,0,2])
     
-    def compute_mask(self, inputs):
+    def compute_mask(self, inputs, mask=None):
         return tf.transpose(tf.split(tf.not_equal(inputs, self.mask_value), self.num_splites, axis=1), perm=[1,0,2])
     
     

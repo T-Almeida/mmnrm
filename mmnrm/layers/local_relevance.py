@@ -1,5 +1,5 @@
 """
-This file contains layesr that handle and process interactions matrices in order to produce local relevance.
+This file contains layers that handle and process interactions matrices in order to produce local relevance.
 """
 
 import tensorflow as tf
@@ -15,6 +15,7 @@ class MultipleNgramConvs(tf.keras.layers.Layer):
                  polling_avg = True, # do avg polling after convolution
                  use_mask = True,
                  filters=lambda x,y:x*y*2**y, # can be a list or a function of input features and n-gram
+                 activation="relu",
                  dtype="float32", 
                  **kwargs):
         super(MultipleNgramConvs, self).__init__(dtype=dtype, **kwargs)
@@ -24,6 +25,7 @@ class MultipleNgramConvs(tf.keras.layers.Layer):
         self.polling_avg = polling_avg
         self.use_mask = use_mask
         self.filters = filters
+        self.activation = activation
             
     def build(self, input_shape):
         
@@ -42,7 +44,9 @@ class MultipleNgramConvs(tf.keras.layers.Layer):
             else:
                 raise ValueError("filters_function must be a function(x, y) or a list or a integer")
             
-            _conv_layer = tf.keras.layers.Conv2D(self.input_feature_dim*n*2**n, (n,n), 
+            _conv_layer = tf.keras.layers.Conv2D(self.input_feature_dim*n*2**n, 
+                                                 (n,n),
+                                                 activation=self.activation,
                                                  padding="SAME",
                                                  dtype=self.dtype)
             _conv_layer.build(input_shape)

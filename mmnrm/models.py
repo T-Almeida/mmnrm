@@ -1,9 +1,9 @@
 import tensorflow as tf
 from tensorflow.keras import backend as K
 
-from interactions import SemanticInteractions
-from local_relevance import MultipleNgramConvs, MaskedSoftmax
-from transformations import MaskedConcatenate
+from mmnrm.layers.interaction import SemanticInteractions
+from mmnrm.layers.local_relevance import MultipleNgramConvs, MaskedSoftmax
+from mmnrm.layers.transformations import MaskedConcatenate
 
 
 def build_PACRR(max_q_length,
@@ -25,14 +25,26 @@ def build_PACRR(max_q_length,
     
     semantic_interaction = SemanticInteractions(emb_matrix)
     ngram_convs = MultipleNgramConvs(max_ngram=max_ngram,
-                                      k_max=k_max,
-                                      k_polling_avg=k_polling_avg,
-                                      polling_avg=polling_avg,
-                                      use_mask=use_mask,
-                                      filters=filters)
+                                     k_max=k_max,
+                                     k_polling_avg=k_polling_avg,
+                                     polling_avg=polling_avg,
+                                     use_mask=use_mask,
+                                     filters=filters,
+                                     activation="relu")
     softmax_IDF = MaskedSoftmax()
     concatenate = MaskedConcatenate(0)
-    lstm = tf.keras.layers.LSTM(1)
+    lstm = tf.keras.layers.LSTM(1, 
+                                dropout=0.0, 
+                                recurrent_regularizer=None, 
+                                recurrent_dropout=0.0, 
+                                unit_forget_bias=True, 
+                                recurrent_activation="hard_sigmoid", 
+                                bias_regularizer=None, 
+                                activation="tanh", 
+                                recurrent_initializer="orthogonal", 
+                                kernel_regularizer=None, 
+                                kernel_initializer="glorot_uniform",
+                                unroll=True) # speed UP!!!
     
     # build layers
     
