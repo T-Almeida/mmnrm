@@ -6,7 +6,10 @@ import tensorflow as tf
 from tensorflow.keras import backend as K
 import time
 import tempfile
+import shutil
+import subprocess
 import os
+from collections import defaultdict
 
 import random
 import numpy as np
@@ -14,29 +17,32 @@ import pickle
 
 def hinge_loss(positive_score, negative_score):
     return K.mean(K.maximum(0., 1. - positive_score + negative_score))
+
+def pairwise_cross_entropy(positive_score, negative_score):
+    positive_exp = K.exp(positive_score)
+    return K.mean(-K.log(positive_exp/(positive_exp+K.exp(negative_score))))
     
 
-class PairwiseTraining():
-    
+class BaseTraining():
     def __init__(self, 
                  model,
+                 loss,
                  train_collection,
                  test_collection = None,
-                 loss=hinge_loss, 
                  optimizer="adam", # keras optimizer
-                 **kwargs):
-        
-        super(PairwiseTraining, self).__init__(**kwargs)
+                 **kwargs): 
+        super(BaseTraining, self).__init__(**kwargs)
         self.model = model
-        self.train_collection = train_collection
-        self.test_collection = test_collection
         self.loss = loss
         
+        self.train_collection = train_collection
+        self.test_collection = test_collection
+        
         self.optimizer = tf.keras.optimizers.get(optimizer)
-    
-    def draw_graph(self, *data):
+        
+    def draw_graph(self, name, *data):
 
-        logdir = 'logs/func/pairwise_training' 
+        logdir = 'logs/func/'+name 
         writer = tf.summary.create_file_writer(logdir)
 
         tf.summary.trace_on(graph=True, profiler=True)
@@ -48,10 +54,19 @@ class PairwiseTraining():
               name="training_trace",
               step=0,
               profiler_outdir=logdir)
+            
+    def train(self, epoch, draw_graph=True):
+        raise NotImplementedError("This is an abstract class, should not be initialized")
+    
+class PairwiseTraining(BaseTraining):
+    
+    def __init__(self, loss=hinge_loss, **kwargs):
+        super(PairwiseTraining, self).__init__(loss=loss, **kwargs)
+    
     
     @tf.function # check if this can reutilize the computational graph for the prediction phase
     def model_score(self, inputs):
-        print("[DEBUG] CALL MODEL_SCORE FUNCTION")
+        print("\r[DEBUG] CALL MODEL_SCORE FUNCTION")
         return self.model(inputs)
     
     @tf.function # build a static computational graph
@@ -79,7 +94,7 @@ class PairwiseTraining():
         steps = self.train_collection.get_steps()
         generator_X = self.train_collection.generator()
         
-        positive_inputs, negative_inputs = next(generator_x)
+        positive_inputs, negative_inputs = next(generator_X)
         
         if draw_graph:
             self.draw_graph(positive_inputs, negative_inputs)
@@ -91,26 +106,49 @@ class PairwiseTraining():
                 s_time = time.time()
                 loss = self.training_step(positive_inputs, negative_inputs)
                 loss_step.append(loss)
-                print("Step {}/{} | Loss {} | time {} \t\t".format(s, steps, loss, time.time()-s_time), end="\r")
+                print("\rStep {}/{} | Loss {} | time {}".format(s, steps, loss, time.time()-s_time), end="\r")
                 
-                positive_inputs, negative_inputs = next(generator_x)
+                positive_inputs, negative_inputs = next(generator_X)
             
             # perform evaluation if data is available
             if self.test_collection is not None:
                 generator_Y = self.test_collection.generator()
                 
-                results = defaultdict(list)
-                for query_id, Y in generator_Y:
-                    scores = self.model_score(Y)
-                    results[query_id].append(scores)
+                q_scores = defaultdict(list)
                 
-            print("\rEpoch {} | avg loss {}".format(e, np.mean(loss_step)))
+                for i, _out in enumerate(generator_Y):
+                    query_id, Y, docs_ids = _out
+                    s_time = time.time()
+                    scores = self.model_score(Y).numpy()[:,0].tolist()
+                    print("\rEvaluation {} | time {}".format(i, time.time()-s_time), end="\r")
+                    q_scores[query_id].extend(list(zip(docs_ids,scores)))
+                
+                # sort the rankings
+                for query_id in q_scores.keys():
+                    q_scores[query_id].sort(key=lambda x:-x[1])
+                    
+                # evaluate
+                evaluation = self.test_collection.evaluate(q_scores)
+                
+                
+                print("\nEpoch {} | avg loss {} | recall@100 {} | map@20 {} | NDCG@20 {} | P@20 {}"\
+                                                          .format(e, 
+                                                           np.mean(loss_step),
+                                                           evaluation["recall_100"],
+                                                           evaluation["map_cut_20"],
+                                                           evaluation["ndcg_cut_20"],
+                                                           evaluation["P_20"]))
+            else:
+                print("\nEpoch {} | avg loss {} | ".format(e, np.mean(loss_step)))
             
-            ## TEST
-            return results
+            
+                                                                                          
+                                                                                          
+                                                                                          
             
             
-
+# Create a more abstract class that uses common elemetns like, b_size, transform_input etc...
+            
 class TestCollection:
     def __init__(self, query_list, goldstandard_trec_file, query_docs, trec_script_eval_path, transform_inputs_fn=None, b_size=64, **kwargs):
         """
@@ -147,6 +185,27 @@ class TestCollection:
         self.b_size = b_size
         return self
     
+    def get_config(self):
+        data_json = {
+            "query_list": self.query_list,
+            "goldstandard_trec_file": self.goldstandard_trec_file,
+            "query_docs": self.query_docs,
+            "trec_script_eval_path": self.trec_script_eval_path
+        } 
+        
+        return data_json
+    
+    def save(self, path):
+        with open(path+".p", "wb") as f:
+            pickle.dump(self.get_config(), f)
+            
+    @staticmethod
+    def load(path):
+        with open(path+".p", "rb") as f:
+            config = pickle.load(f)
+        
+        return TestCollection(**config)
+    
     def set_transform_inputs_fn(self, transform_inputs_fn):
         # build style method
         self.transform_inputs_fn = transform_inputs_fn
@@ -154,15 +213,14 @@ class TestCollection:
     
     def generator(self):
         # generator for the query, pos and negative docs
-        gen_Y = self.__generator()
+        gen_Y = self.__generate()
         
-        # apply transformation ??
         if self.transform_inputs_fn is not None:
             gen_Y = self.transform_inputs_fn(gen_Y)
         
         # finally yield the input to the model
-        with True:
-            yield next(gen_Y)
+        for Y in gen_Y:
+            yield Y
     
     def __generate(self):
         
@@ -170,25 +228,37 @@ class TestCollection:
             for i in range(0, len(self.query_docs[query_data["id"]]), self.b_size):
                 
                 docs = self.query_docs[query_data["id"]][i:i+self.b_size]
-                queries = [query_data["text"]] * len(docs)
                 
-                yield query_data["id"], [queries, docs]
+                yield query_data["id"], query_data["query"], docs
     
     def __metrics_to_dict(self, metrics):
         return dict(map(lambda x: tuple(map(lambda y: y.strip(),x.split("\tall"))), metrics.split("\n")[:-1]))
+    
+    def evaluate_pre_rerank(self, output_metris=["recall_100", "map_cut_20", "ndcg_cut_20", "P_20"]):
+        """
+        Compute evaluation metrics over the documents order before been ranked
+        """ 
+        ranked_format = {k:list(map(lambda x:(x[1]["id"], len(v)-x[0]), enumerate(v))) for k,v in self.query_docs.items()}
+        
+        metrics = self.evaluate(ranked_format)
+        
+        if isinstance(output_metris, list):
+            return [ (m, metrics[m]) for m in output_metris]
+        else:
+            return metrics
     
     def evaluate(self, ranked_query_docs):
         metrics = None
         temp_dir = tempfile.mkdtemp()
         
         try:
-            with open(join(temp_dir, "qret.txt"), "w") as f:
-                for i, rank_data in enumerate(ranked_query_docs.items):
+            with open(os.path.join(temp_dir, "qret.txt"), "w") as f:
+                for i, rank_data in enumerate(ranked_query_docs.items()):
                     for j,doc in enumerate(rank_data[1]):
                         _str = "{} Q0 {} {} {} run\n".format(rank_data[0],
-                                                           doc["id"],
+                                                           doc[0],
                                                            j+1,
-                                                           doc["score"])
+                                                           doc[1])
                         f.write(_str)
                         
             # evaluate
@@ -212,7 +282,15 @@ class TestCollection:
             
             
 class TrainCollection:
-    def __init__(self, query_list, goldstandard, transform_inputs_fn=None, query_docs_subset=None, verbose=True, b_size=64, **kwargs):
+    def __init__(self, 
+                 query_list, 
+                 goldstandard, 
+                 query_docs_subset=None, 
+                 use_relevance_groups=False,
+                 transform_inputs_fn=None, 
+                 verbose=True, 
+                 b_size=64, 
+                 **kwargs):
         """
         query_list - must be a list with the following format :
                      [
@@ -238,12 +316,13 @@ class TrainCollection:
                                            id: [{
                                                id: <str>
                                                text: <str>
-                                           }],
+                                           }, ...],
                                            ...
                                        }
         """
         self.query_list = query_list # [{query data}]
         self.goldstandard = goldstandard # {query_id:[relevance docs]}
+        self.use_relevance_groups = use_relevance_groups
         self.transform_inputs_fn = transform_inputs_fn
         self.verbose = verbose
         self.b_size = b_size
@@ -263,54 +342,49 @@ class TrainCollection:
         
         self.__build(query_docs_subset)
     
+    def __find_relevance_group(self, doc_id, search_gs):
+        for k in search_gs.keys():
+            if doc_id in search_gs[k]:
+                return k
+        return -1
+    
     def __build(self, query_docs_subset):
         
         if query_docs_subset is None:
             # number of samples
-            return # 
+            return #
         
         self.sub_set_goldstandard = {}
         self.collection = {}
-        
-        # coverage test
-        unique_pos_docs_goldstandard_ids = set()
-        unique_neg_docs_goldstandard_ids = set()
-        
-        for g_result in self.goldstandard.values():
-            for _id in g_result["pos_docs"]:
-                unique_pos_docs_goldstandard_ids.add(_id)
-            for _id in g_result["neg_docs"]:
-                unique_neg_docs_goldstandard_ids.add(_id)
-        
-        unjudged_docs = 0
-        
+  
         # filter the goldstandard
         for _id, relevance in query_docs_subset.items():
-            self.sub_set_goldstandard[_id] = {
-                "pos_docs":[],
-                "neg_docs":[]
-            }
+            self.sub_set_goldstandard[_id] = defaultdict(list)
             
             for doc in relevance:
-                if doc["id"] in self.goldstandard[_id]["pos_docs"]:
-                    self.sub_set_goldstandard[_id]["pos_docs"].append(doc["id"])
-                    self.collection[doc["id"]] = doc["text"]
-                elif doc["id"] in self.goldstandard[_id]["neg_docs"]:
-                    self.sub_set_goldstandard[_id]["neg_docs"].append(doc["id"])
-                    self.collection[doc["id"]] = doc["text"]
+                k = self.__find_relevance_group(doc["id"], self.goldstandard[_id])
+                if k>0:
+                    if self.use_relevance_groups:
+                        self.sub_set_goldstandard[_id][k].append(doc["id"])
+                    else:
+                        self.sub_set_goldstandard[_id][1].append(doc["id"])
                 else:
-                    unjudged_docs+=1
+                    # default add to the less relevance group
+                    self.sub_set_goldstandard[_id][0].append(doc["id"])
+                
+                #add to the collection
+                self.collection[doc["id"]] = doc["text"]
 
         # stats
         if self.verbose:
-            print("Minimum number of pos_docs in a query of the goldstandard sub set:", min(map(lambda x: len(x["pos_docs"]), self.sub_set_goldstandard.values())))
-            print("Minimum number of neg_docs in a query of the goldstandard sub set:", min(map(lambda x: len(x["neg_docs"]), self.sub_set_goldstandard.values())))
+            max_keys = max(map(lambda x:max(x.keys()), self.sub_set_goldstandard.values()))
             
-            print("Mean number of pos_docs in a query of the goldstandard sub set:", sum(map(lambda x: len(x["pos_docs"]), self.sub_set_goldstandard.values()))/len(self.sub_set_goldstandard))
-            print("Mean number of neg_docs in a query of the goldstandard sub set:", sum(map(lambda x: len(x["neg_docs"]), self.sub_set_goldstandard.values()))/len(self.sub_set_goldstandard))
+            for k in range(max_keys+1):
+                print("Minimum number of relevance type({}) in the queries of the goldstandard sub set: {}".format(k, min(map(lambda x: len(x[k]), self.sub_set_goldstandard.values()))))
+            
+                print("Mean number of relevance type({}) in the queries of the goldstandard sub set: {}".format(k, sum(map(lambda x: len(x[k]), self.sub_set_goldstandard.values()))/len(self.sub_set_goldstandard)))
             
             print("Sub Collection size", len(self.collection))
-            print("Number of documents without judgment", unjudged_docs)
     
     def batch_size(self, b_size=32):
         # build style method
@@ -334,7 +408,7 @@ class TrainCollection:
         training_data = self.__get_goldstandard()
         
         # an epoch will be defined with respect to the total number of positive pairs
-        total_positives = sum(map(lambda x: len(x["pos_docs"]), training_data.values()))
+        total_positives = sum(map(lambda x: sum([ len(x[k]) for k in x.keys() if k>0]), training_data.values()))
           
         return total_positives//self.b_size
     
@@ -347,7 +421,7 @@ class TrainCollection:
             gen_X = self.transform_inputs_fn(gen_X)
         
         # finally yield the input to the model
-        with True:
+        while True:
             yield next(gen_X)
                 
         
@@ -373,25 +447,42 @@ class TrainCollection:
             # build $batch_size triples and yield
             for _ in range(self.b_size):
                 selected_query = self.query_list[random.randint(0, len(self.query_list)-1)]
+                #print(selected_query["id"])
+                # select the relevance group, (only pos)
+                positive_keys=list(training_data[selected_query["id"]].keys())
+                #print("positive_keys", positive_keys)
+                positive_keys.remove(0)
+                #print("positive_keys", positive_keys)
+                if len(positive_keys)>1:
+                    group_len = list(map(lambda x: len(training_data[selected_query["id"]][x]), positive_keys))
+                    total = sum(group_len)
+                    prob = list(map(lambda x: x/total, group_len))
+                    #print("probs", prob)
+                    relevance_group = np.random.choice(positive_keys, p=prob)
+                else:
+                    relevance_group = positive_keys[0]
                 
-                pos_doc_index = random.randint(0, len(training_data[selected_query["id"]]["pos_docs"])-1)
-                pos_doc_id = training_data[selected_query["id"]]["pos_docs"][pos_doc_index]
+                _pos_len = len(training_data[selected_query["id"]][relevance_group])
+                pos_doc_index = random.randint(0, _pos_len-1) if _pos_len>1 else 0
+                pos_doc_id = training_data[selected_query["id"]][relevance_group][pos_doc_index]
                 pos_doc = collection[pos_doc_id]
                 
-                neg_doc_index = random.randint(0, len(training_data[selected_query["id"]]["neg_docs"])-1)
-                neg_doc_id = training_data[selected_query["id"]]["neg_docs"][neg_doc_index]
+                _neg_len = len(training_data[selected_query["id"]][relevance_group-1])
+                neg_doc_index = random.randint(0, _neg_len-1) if _neg_len>1 else 0
+                neg_doc_id = training_data[selected_query["id"]][relevance_group-1][neg_doc_index]
                 neg_doc = collection[neg_doc_id]
                 
                 y_query.append(selected_query["query"])
                 y_pos_doc.append(pos_doc)
                 y_neg_doc.append(neg_doc)
             
-            yield np.array(y_query), np.array(y_pos_doc), np.array(y_neg_doc)
+            yield (np.array(y_query), np.array(y_pos_doc), np.array(y_neg_doc))
     
     def get_config(self):
         data_json = {
             "query_list": self.query_list,
             "goldstandard": self.goldstandard,
+            "use_relevance_groups": self.use_relevance_groups,
             "verbose": self.verbose,
             "sub_set_goldstandard": self.sub_set_goldstandard,
             "collection": self.collection,

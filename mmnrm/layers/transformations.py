@@ -50,3 +50,43 @@ class MaskedConcatenate(tf.keras.layers.Layer):
         assert(isinstance(mask, list))
         return mask[self.index_to_keep]
     
+    
+class ShuffleRows(tf.keras.layers.Layer):
+    """
+    Shuffle a tensor along the row dimension (Batch, Row, Colums)
+    """
+        
+    def _build_indexes(self, x):
+        indices_tensor_shape = K.shape(x)[:-1]
+        l = tf.range(indices_tensor_shape[1], dtype="int32")
+        l = tf.random.shuffle(l)
+
+
+        rows_dim =  K.expand_dims(indices_tensor_shape[0])
+
+        l=tf.tile(l, rows_dim)
+        return K.expand_dims(tf.reshape(l, indices_tensor_shape))
+    
+    def call(self, x, mask=None):
+        """
+        x[0] - tensor matrix
+        x[1] - indices that will guide the permutation, this should follow the format:
+        
+                permutation => (R1,R2,R3,R4)
+                indices => [[[R1], [R2], [R3], [R4]]] * batch_size,
+                
+                where R1 R2 R3 R4 are the permutated index of the rows
+                
+                example:  [[[1],[2],[3],[0]]]*10
+
+        """
+        indices = self._build_indexes(x)
+
+        return tf.gather_nd(x, indices, batch_dims=1)
+
+        
+    
+    def compute_mask(self, x, mask=None):
+        return None
+        #return tf.gather_nd(mask, x[1], batch_dims=1)
+    

@@ -1,6 +1,7 @@
 """
 Auxiliar code needed to better handle text inputs
 """
+from collections import defaultdict
 
 def TREC04_queries_transform(queires, type_query="title"):
     return list(map(lambda x:{"id":x["number"],
@@ -10,18 +11,16 @@ def TREC04_queries_transform(queires, type_query="title"):
 def TREC04_goldstandard_transform(goldstandard):
     _g = {}
     for _id, relevance in goldstandard.items():
-        _g[_id]={
-            "pos_docs":[],
-            "neg_docs":[]
-        }
+        _g[_id]=defaultdict(list)
+        
         for doc in relevance:
             _rel = int(doc[1])
-            if _rel==0:
-                _g[_id]["neg_docs"].append(doc[0])
-            elif _rel>0:
-                _g[_id]["pos_docs"].append(doc[0])
-            else:
+            
+            if _rel<0: #assert
                 raise RuntimeError("value of relevance is negative??", doc[1])
+            
+            _g[_id][_rel].append(doc[0])
+            
     return _g
 
 def TREC04_results_transform(results):

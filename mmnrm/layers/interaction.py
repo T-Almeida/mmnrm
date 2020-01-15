@@ -69,6 +69,7 @@ class ExactInteractions(MatrixInteractionMasking):
         query_matrix, sentence_matrix = self._query_sentence_vector_to_matrices(x[0], x[1])
         
         interaction_matrix = K.cast(K.equal(query_matrix, sentence_matrix), dtype=self.dtype) * mask
+        interaction_matrix = K.expand_dims(interaction_matrix)
         
         if len(x)==4:
             query_importance_matrix, sentence_importance_matrix = self._query_sentence_vector_to_matrices(x[2], x[3])
@@ -76,32 +77,62 @@ class ExactInteractions(MatrixInteractionMasking):
             query_importance_matrix = query_importance_matrix * mask
             sentence_importance_matrix = sentence_importance_matrix * mask
             
-            interaction_matrix = K.concatenate([K.expand_dims(interaction_matrix),
+            interaction_matrix = K.concatenate([interaction_matrix,
                                                 K.expand_dims(query_importance_matrix),
                                                 K.expand_dims(sentence_importance_matrix)])
         
         return interaction_matrix
-    
 
-class SemanticInteractions(MatrixInteractionMasking):
-    
+class SemanticBaseInteraction(MatrixInteractionMasking):
+    """Abstract class should not be initialized"""
     def __init__(self, 
-                 embedding_matrix,
                  learn_term_weights=True,
                  initializer='glorot_uniform',
                  regularizer=None,
                  return_embeddings = False,
                  **kwargs):
         
-        super(SemanticInteractions, self).__init__(**kwargs)
-        # embedding layer as sugested in https://github.com/tensorflow/tensorflow/issues/31086
-        # instead of use keras.Embedding
-        self.embeddings = tf.constant(embedding_matrix, dtype=self.dtype)
-        self.embedding_dim = embedding_matrix.shape[1]
+        super(SemanticBaseInteraction, self).__init__(**kwargs)
+        
         self.learn_term_weights = learn_term_weights
         self.initializer = initializer
         self.regularizer = regularizer
         self.return_embeddings = return_embeddings
+        
+    def _forward_interaction_matrix(self, query_embeddings, sentence_embeddings, mask):
+        
+        interaction_matrix = tf.einsum("bqe,bde->bqd", query_embeddings, sentence_embeddings) * mask
+        interaction_matrix = K.expand_dims(interaction_matrix)
+        
+        if self.learn_term_weights:
+            mask = K.expand_dims(mask)
+            
+            query_projection = K.dot(query_embeddings, self.query_w)
+            sentence_projection = K.dot(sentence_embeddings, self.sentence_w)
+            
+            query_projection_matrix, sentence_projection_matrix = self._query_sentence_vector_to_matrices(query_projection, sentence_projection) 
+            
+            query_projection_matrix = query_projection_matrix * mask
+            sentence_projection_matrix = sentence_projection_matrix * mask
+            
+            interaction_matrix = K.concatenate([interaction_matrix, query_projection_matrix, sentence_projection_matrix])
+            
+        return interaction_matrix
+
+
+class SemanticInteractions(SemanticBaseInteraction):
+    
+    def __init__(self, embedding_matrix, trainable_embeddings=False, **kwargs):
+        super(SemanticInteractions, self).__init__(**kwargs)
+        # embedding layer as sugested in https://github.com/tensorflow/tensorflow/issues/31086
+        # instead of use keras.Embedding
+        if trainable_embeddings:
+            self.embeddings = tf.Variable(embedding_matrix, dtype=self.dtype)
+            self._trainable_weights += [self.embeddings]
+        else:    
+            self.embeddings = tf.constant(embedding_matrix, dtype=self.dtype)
+        self.embedding_dim = embedding_matrix.shape[1]
+        
         print("[EMBEDDING MATRIX SHAPE]", embedding_matrix.shape)
     
     def build(self, input_shape):
@@ -135,38 +166,21 @@ class SemanticInteractions(MatrixInteractionMasking):
         query_embeddings = tf.nn.embedding_lookup(self.embeddings, x[0])
         sentence_embeddings = tf.nn.embedding_lookup(self.embeddings, x[1])
         
-        interaction_matrix = tf.einsum("bqe,bde->bqd", query_embeddings, sentence_embeddings) * mask
-        
-        if self.learn_term_weights:
-            mask = K.expand_dims(mask)
-            
-            query_projection = K.dot(query_embeddings, self.query_w)
-            sentence_projection = K.dot(sentence_embeddings, self.sentence_w)
-            
-            query_projection_matrix, sentence_projection_matrix = self._query_sentence_vector_to_matrices(query_projection, sentence_projection) 
-            
-            query_projection_matrix = query_projection_matrix * mask
-            sentence_projection_matrix = sentence_projection_matrix * mask
-            
-            interaction_matrix = K.expand_dims(interaction_matrix)
-            interaction_matrix = K.concatenate([interaction_matrix, query_projection_matrix, sentence_projection_matrix])
+        # compute interaction matrix and the term weights
+        interaction_matrix = self._forward_interaction_matrix(query_embeddings, sentence_embeddings, mask)
         
         if self.return_embeddings:
             return interaction_matrix, query_embeddings, sentence_embeddings
         else:
             return interaction_matrix
 
-class ContextedSemanticInteractions(MatrixInteractionMasking):
+class ContextedSemanticInteractions(SemanticBaseInteraction):
     
     def __init__(self, 
                  context_embedding_layer = None,
                  cls_token_id = None,
                  sep_token_id = None,
                  pad_token_id = None,
-                 learn_term_weights = False,
-                 initializer='glorot_uniform',
-                 regularizer=None,
-                 return_embeddings = False,
                  **kwargs):
         
         super(ContextedSemanticInteractions, self).__init__(**kwargs)
@@ -253,21 +267,8 @@ class ContextedSemanticInteractions(MatrixInteractionMasking):
             else:
                 query_context_embeddings, sentence_context_embeddings = (x[0],x[1])
                 
-            interaction_matrix = tf.einsum("bqe,bde->bqd", query_context_embeddings, sentence_context_embeddings) * mask
-            
-            if self.learn_term_weights:
-                mask = K.expand_dims(mask) # TODO check the rank of the tensor before expand??
-
-                query_context_embeddings = K.dot(query_context_embeddings, self.query_w)
-                sentence_context_embeddings = K.dot(sentence_context_embeddings, self.sentence_w)
-
-                query_projection_matrix, sentence_projection_matrix = self._query_sentence_vector_to_matrices(query_context_embeddings, sentence_context_embeddings) 
-
-                query_projection_matrix = query_projection_matrix * mask
-                sentence_projection_matrix = sentence_projection_matrix * mask
-
-                interaction_matrix = K.expand_dims(interaction_matrix)
-                interaction_matrix = K.concatenate([interaction_matrix, query_projection_matrix, sentence_projection_matrix])
+            # compute interaction matrix and the term weights
+            interaction_matrix = self._forward_interaction_matrix(query_context_embeddings, sentence_context_embeddings, mask)
             
         else:
             raise NotImplementedError("Missing implmentation when input has len", len(x))

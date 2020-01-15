@@ -44,7 +44,7 @@ class MultipleNgramConvs(tf.keras.layers.Layer):
             else:
                 raise ValueError("filters_function must be a function(x, y) or a list or a integer")
             
-            _conv_layer = tf.keras.layers.Conv2D(self.input_feature_dim*n*2**n, 
+            _conv_layer = tf.keras.layers.Conv2D(filters, 
                                                  (n,n),
                                                  activation=self.activation,
                                                  padding="SAME",
@@ -62,7 +62,7 @@ class MultipleNgramConvs(tf.keras.layers.Layer):
         # forward computation
         
         # tensor convolution for the differents ngram (1 to max_ngram).
-        multiple_convs = [ conv(x) for conv in self.convolutions ] 
+        multiple_convs = [ conv(x) for conv in self.convolutions ]
         
         polling = []
         for conv in multiple_convs:
@@ -76,6 +76,7 @@ class MultipleNgramConvs(tf.keras.layers.Layer):
                 polling.append(tf.nn.top_k(K.mean(conv, axis=-1), k=self.k_max)[0])
             
             if self.k_polling_avg is not None:
+                raise NotImplementedError("The k_polling_avg is currently not working, awaiting for review")
                 polling.append(tf.nn.top_k(K.mean(tf.nn.top_k(conv, k=self.k_polling_avg)[0], axis=-1), k=self.k_max)[0])
         
         # _old multiple_conv = [ tf.nn.top_k(K.max(conv(x)*mask, axis=-1), k=self.k_max)[0] for conv in self.convolutions ] 
