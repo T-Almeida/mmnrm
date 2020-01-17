@@ -11,9 +11,14 @@ import subprocess
 import os
 from collections import defaultdict
 
+from mmnrm.utils import save_model_weights, load_model_weights
+
 import random
 import numpy as np
 import pickle
+
+import wandb
+
 
 def hinge_loss(positive_score, negative_score):
     return K.mean(K.maximum(0., 1. - positive_score + negative_score))
@@ -28,17 +33,34 @@ class BaseTraining():
                  model,
                  loss,
                  train_collection,
+                 validation_collection=None,
                  test_collection = None,
+                 comparation_metric = "ndcg_cut_20",
+                 path_store = "/backup/NIR/best_model_weights",
                  optimizer="adam", # keras optimizer
+                 callbacks=[],
+                 wandb_config={},
                  **kwargs): 
         super(BaseTraining, self).__init__(**kwargs)
         self.model = model
         self.loss = loss
         
         self.train_collection = train_collection
+        self.validation_collection = validation_collection
         self.test_collection = test_collection
         
+        self.comparation_metric = comparation_metric
+        
         self.optimizer = tf.keras.optimizers.get(optimizer)
+        
+        self.path_store = path_store
+        
+        self.callbacks = callbacks
+        
+        ## config wandb
+        wandb.init(project="nir-on-robust04",
+                   name=model.name,
+                   config=wandb_config)
         
     def draw_graph(self, name, *data):
 
@@ -87,6 +109,24 @@ class PairwiseTraining(BaseTraining):
 
         return loss
 
+    def evaluate_test_set(self, test_set):
+        generator_Y = test_set.generator()
+                
+        q_scores = defaultdict(list)
+
+        for i, _out in enumerate(generator_Y):
+            query_id, Y, docs_ids = _out
+            s_time = time.time()
+            scores = self.model_score(Y).numpy()[:,0].tolist()
+            print("\rEvaluation {} | time {}".format(i, time.time()-s_time), end="\r")
+            q_scores[query_id].extend(list(zip(docs_ids,scores)))
+
+        # sort the rankings
+        for query_id in q_scores.keys():
+            q_scores[query_id].sort(key=lambda x:-x[1])
+
+        # evaluate
+        return test_set.evaluate(q_scores)
     
     def train(self, epoch, draw_graph=True):
         
@@ -96,55 +136,93 @@ class PairwiseTraining(BaseTraining):
         
         positive_inputs, negative_inputs = next(generator_X)
         
+        current_best = 0
+        model_path = os.path.join(self.path_store, self.model.name+".h5")
+        
         if draw_graph:
             self.draw_graph(positive_inputs, negative_inputs)
-
+        
+        for c in self.callbacks:
+            c.on_train_start(self)
+        
         for e in range(epoch):
             loss_step = []
+            
+            #execute callbacks
+            for c in self.callbacks:
+                c.on_epoch_start(self, e)
+                
             for s in range(steps):
                 
+                #execute callbacks
+                for c in self.callbacks:
+                    c.on_step_start(self, e, s)
+                    
                 s_time = time.time()
+                    
                 loss = self.training_step(positive_inputs, negative_inputs)
                 loss_step.append(loss)
                 print("\rStep {}/{} | Loss {} | time {}".format(s, steps, loss, time.time()-s_time), end="\r")
-                
+                # send loss
+                wandb.log({'loss': float(loss)})
                 positive_inputs, negative_inputs = next(generator_X)
+                
+                #execute callbacks
+                f_time = time.time()-s_time
+                for c in self.callbacks:
+                    c.on_step_end(self, e, s, loss, f_time)
             
             # perform evaluation if data is available
-            if self.test_collection is not None:
-                generator_Y = self.test_collection.generator()
-                
-                q_scores = defaultdict(list)
-                
-                for i, _out in enumerate(generator_Y):
-                    query_id, Y, docs_ids = _out
-                    s_time = time.time()
-                    scores = self.model_score(Y).numpy()[:,0].tolist()
-                    print("\rEvaluation {} | time {}".format(i, time.time()-s_time), end="\r")
-                    q_scores[query_id].extend(list(zip(docs_ids,scores)))
-                
-                # sort the rankings
-                for query_id in q_scores.keys():
-                    q_scores[query_id].sort(key=lambda x:-x[1])
-                    
-                # evaluate
-                evaluation = self.test_collection.evaluate(q_scores)
-                
-                
+            if self.validation_collection is not None:
+                metrics = self.evaluate_test_set(self.validation_collection)
                 print("\nEpoch {} | avg loss {} | recall@100 {} | map@20 {} | NDCG@20 {} | P@20 {}"\
-                                                          .format(e, 
-                                                           np.mean(loss_step),
-                                                           evaluation["recall_100"],
-                                                           evaluation["map_cut_20"],
-                                                           evaluation["ndcg_cut_20"],
-                                                           evaluation["P_20"]))
+                                                  .format(e, 
+                                                   np.mean(loss_step),
+                                                   metrics["recall_100"],
+                                                   metrics["map_cut_20"],
+                                                   metrics["ndcg_cut_20"],
+                                                   metrics["P_20"]))
+                
+                wandb.log({'recall@100': metrics["recall_100"],
+                           'map@20': metrics["map_cut_20"],
+                           'ndcg@20': metrics["ndcg_cut_20"],
+                           'P@20': metrics["P_20"],
+                           'loss': np.mean(loss_step),
+                           'epoch': e})
+                
+                if metrics[self.comparation_metric] > current_best:
+                    current_best = metrics[self.comparation_metric]
+                    save_model_weights(model_path, self.model)
+                    wandb.run.summary["best_"+self.comparation_metric] = current_best
+                    print("Saved current best with score:", current_best)
             else:
                 print("\nEpoch {} | avg loss {} | ".format(e, np.mean(loss_step)))
             
-            
+            #execute callbacks
+            for c in self.callbacks:
+                c.on_epoch_end(self, e, np.mean(loss_step))
+        
+        for c in self.callbacks:
+            c.on_train_end(self)
+        
+        # load best model and test    
+        if current_best>0:
+            load_model_weights(model_path, self.model)
+            print("Loaded current best with score:", current_best)
+        
+        if self.test_collection is not None:
+            metrics = self.evaluate_test_set(self.test_collection)
+            print(metrics)
+            wandb.run.summary["test_"+self.comparation_metric] = metrics["ndcg_cut_20"]
+
+            print("\n recall@100 {} | map@20 {} | NDCG@20 {} | P@20 {}"\
+                                              .format(
+                                               metrics["recall_100"],
+                                               metrics["map_cut_20"],
+                                               metrics["ndcg_cut_20"],
+                                               metrics["P_20"]))
                                                                                           
-                                                                                          
-                                                                                          
+                 
             
             
 # Create a more abstract class that uses common elemetns like, b_size, transform_input etc...
@@ -232,7 +310,7 @@ class TestCollection:
                 yield query_data["id"], query_data["query"], docs
     
     def __metrics_to_dict(self, metrics):
-        return dict(map(lambda x: tuple(map(lambda y: y.strip(),x.split("\tall"))), metrics.split("\n")[:-1]))
+        return dict(map(lambda k:(k[0], float(k[1])), map(lambda x: tuple(map(lambda y: y.strip(), x.split("\tall"))), metrics.split("\n")[1:-1])))
     
     def evaluate_pre_rerank(self, output_metris=["recall_100", "map_cut_20", "ndcg_cut_20", "P_20"]):
         """

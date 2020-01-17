@@ -49,7 +49,24 @@ class MaskedConcatenate(tf.keras.layers.Layer):
     def compute_mask(self, x, mask=None):
         assert(isinstance(mask, list))
         return mask[self.index_to_keep]
-    
+
+class ResidualContextLSTM(tf.keras.layers.Layer):
+    def __init__(self, size, activation="relu", **kwargs):
+        super(ResidualContextLSTM, self).__init__(**kwargs)
+        self.lstm = tf.keras.layers.LSTM(size, activation=activation, return_sequences=True)
+        
+    def call(self, x, mask=None):
+        context = self.lstm(x, mask=mask)
+        return context + x # residual
+
+class ResidualContextBiLSTM(tf.keras.layers.Layer):
+    def __init__(self, size, activation="relu", **kwargs):
+        super(ResidualContextBiLSTM, self).__init__(**kwargs)
+        self.bilstm = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(size, activation=activation, return_sequences=True), merge_mode="ave")
+        
+    def call(self, x, mask=None):
+        context = self.bilstm(x, mask=mask)
+        return context + x # residual
     
 class ShuffleRows(tf.keras.layers.Layer):
     """

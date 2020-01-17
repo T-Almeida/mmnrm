@@ -1,6 +1,8 @@
 import tensorflow as tf
 from tensorflow.keras import backend as K
 
+from mmnrm.layers.transformations import ResidualContextLSTM
+
 """
 All layers of this module produce an interaction matrix from a query and a sentence 
 """
@@ -40,10 +42,13 @@ class MatrixInteractionMasking(MatrixInteraction):
         super(MatrixInteractionMasking, self).__init__(**kwargs)
         self.mask_value = mask_value
     
+    def compute_mask_embedding(self, embedding):
+        return K.not_equal(embedding, self.mask_value)
+    
     def compute_mask(self, x, mask=None):
         
-        query_mask = K.cast(K.not_equal(x[0], self.mask_value), dtype=self.dtype)
-        document_mask = K.cast(K.not_equal(x[1], self.mask_value), dtype=self.dtype)
+        query_mask = K.cast(self.compute_mask_embedding(x[0]), dtype=self.dtype)
+        document_mask = K.cast(self.compute_mask_embedding(x[1]), dtype=self.dtype)
         
         return K.cast(tf.einsum("bq,bd->bqd", query_mask, document_mask), dtype="bool")
     
@@ -122,7 +127,7 @@ class SemanticBaseInteraction(MatrixInteractionMasking):
 
 class SemanticInteractions(SemanticBaseInteraction):
     
-    def __init__(self, embedding_matrix, trainable_embeddings=False, **kwargs):
+    def __init__(self, embedding_matrix, trainable_embeddings=False, learn_context=False, **kwargs):
         super(SemanticInteractions, self).__init__(**kwargs)
         # embedding layer as sugested in https://github.com/tensorflow/tensorflow/issues/31086
         # instead of use keras.Embedding
@@ -131,7 +136,14 @@ class SemanticInteractions(SemanticBaseInteraction):
             self._trainable_weights += [self.embeddings]
         else:    
             self.embeddings = tf.constant(embedding_matrix, dtype=self.dtype)
+
         self.embedding_dim = embedding_matrix.shape[1]
+        
+        self.learn_context = learn_context
+        
+        if self.learn_context:
+            self.context_encoder_q = ResidualContextLSTM(self.embedding_dim)
+            self.context_encoder_s = ResidualContextLSTM(self.embedding_dim)
         
         print("[EMBEDDING MATRIX SHAPE]", embedding_matrix.shape)
     
@@ -165,6 +177,10 @@ class SemanticInteractions(SemanticBaseInteraction):
         # embbed the tokens
         query_embeddings = tf.nn.embedding_lookup(self.embeddings, x[0])
         sentence_embeddings = tf.nn.embedding_lookup(self.embeddings, x[1])
+        
+        if self.learn_context:
+            query_embeddings = self.context_encoder_q(query_embeddings, mask=self.compute_mask_embedding(x[0]))
+            sentence_embeddings = self.context_encoder_s(sentence_embeddings, mask=self.compute_mask_embedding(x[1]))
         
         # compute interaction matrix and the term weights
         interaction_matrix = self._forward_interaction_matrix(query_embeddings, sentence_embeddings, mask)

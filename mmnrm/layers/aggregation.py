@@ -18,7 +18,7 @@ class WeightedCombination(TrainableLayer):
         super(WeightedCombination, self).build(input_shape) 
         
     def call(self, x):
-        return K.sum(x * self.linear_weights, axis=-1)
+        return K.sum(x * K.softmax(self.linear_weights, axis=-1), axis=-1)
     
     def compute_mask(self, inputs, mask=None):
         return None # clear the mask after the combination

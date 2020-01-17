@@ -9,6 +9,7 @@ from mmnrm.layers.aggregation import WeightedCombination
 def build_PACRR(max_q_length,
                 max_d_length,
                 emb_matrix = None,
+                learn_context = False,
                 trainable_embeddings = False,
                 learn_term_weights = False,
                 dense_hidden_units = None,
@@ -34,7 +35,10 @@ def build_PACRR(max_q_length,
     if emb_matrix is None:
         interaction = ExactInteractions()
     else:
-        interaction = SemanticInteractions(emb_matrix, learn_term_weights=learn_term_weights, trainable_embeddings=trainable_embeddings)
+        interaction = SemanticInteractions(emb_matrix, 
+                                           learn_term_weights=learn_term_weights, 
+                                           trainable_embeddings=trainable_embeddings,
+                                           learn_context=learn_context)
         
     ngram_convs = MultipleNgramConvs(max_ngram=max_ngram,
                                      k_max=k_max,
@@ -93,7 +97,13 @@ def build_PACRR(max_q_length,
 
 def semantic_exact_PACRR(semantic_pacrr, 
                          exact_pacrr,
+                         type_combination=0,
                          dense_hidden_units=[4]):
+    
+    """
+    type_combination - 0: use MLP
+                       1: use WeightedCombination + MLP
+    """
     
     max_q_length = semantic_pacrr.input[0].shape[1]
     max_d_length = semantic_pacrr.input[1].shape[1]
@@ -103,8 +113,17 @@ def semantic_exact_PACRR(semantic_pacrr,
     input_query_idf = tf.keras.layers.Input((max_q_length,), dtype="float32")
     input_sentence = tf.keras.layers.Input((max_d_length,), dtype="int32")
     
-    concatenation = tf.keras.layers.Lambda(lambda x: K.concatenate(list(map(lambda y: K.expand_dims(y), x))) )
-    combination = WeightedCombination()
+    
+    def _aggregate(x):
+        if type_combination==0:
+            return tf.keras.layers.Concatenate(axis=-1)(x)
+        elif type_combination==1:
+            x = tf.keras.layers.Lambda(lambda x: K.concatenate(list(map(lambda y: K.expand_dims(y), x))) )(x)
+            return WeightedCombination()(x)
+        else:
+            raise RuntimeError("invalid type_combination")
+        
+    
     def _score(x):
         for i,h in enumerate(dense_hidden_units):
             x = tf.keras.layers.Dense(h, activation="relu")(x)
@@ -114,9 +133,7 @@ def semantic_exact_PACRR(semantic_pacrr,
     semantic_repr = semantic_pacrr([input_query, input_sentence, input_query_idf])
     exact_repr = exact_pacrr([input_query, input_sentence, input_query_idf])
     
-    semantic_exact_repr = concatenation([semantic_repr, exact_repr])
-    
-    combined = combination(semantic_exact_repr)
+    combined = _aggregate([semantic_repr, exact_repr])
     
     score = _score(combined)
     
