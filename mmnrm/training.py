@@ -11,7 +11,9 @@ import subprocess
 import os
 from collections import defaultdict
 
-from mmnrm.utils import save_model_weights, load_model_weights
+from mmnrm.utils import save_model_weights, load_model_weights, set_random_seed, merge_dicts, flat_list, index_from_list
+from mmnrm.text import TREC04_merge_goldstandard_files
+from mmnrm.callbacks import WandBValidationLogger 
 
 import random
 import numpy as np
@@ -33,35 +35,19 @@ class BaseTraining():
                  model,
                  loss,
                  train_collection,
-                 validation_collection=None,
-                 test_collection = None,
-                 comparation_metric = "ndcg_cut_20",
-                 path_store = "/backup/NIR/best_model_weights",
                  optimizer="adam", # keras optimizer
                  callbacks=[],
-                 wandb_config={},
                  **kwargs): 
         super(BaseTraining, self).__init__(**kwargs)
         self.model = model
         self.loss = loss
         
         self.train_collection = train_collection
-        self.validation_collection = validation_collection
-        self.test_collection = test_collection
-        
-        self.comparation_metric = comparation_metric
         
         self.optimizer = tf.keras.optimizers.get(optimizer)
         
-        self.path_store = path_store
-        
         self.callbacks = callbacks
-        
-        ## config wandb
-        wandb.init(project="nir-on-robust04",
-                   name=model.name,
-                   config=wandb_config)
-        
+
     def draw_graph(self, name, *data):
 
         logdir = 'logs/func/'+name 
@@ -79,12 +65,11 @@ class BaseTraining():
             
     def train(self, epoch, draw_graph=True):
         raise NotImplementedError("This is an abstract class, should not be initialized")
-    
+
 class PairwiseTraining(BaseTraining):
     
     def __init__(self, loss=hinge_loss, **kwargs):
         super(PairwiseTraining, self).__init__(loss=loss, **kwargs)
-    
     
     @tf.function # check if this can reutilize the computational graph for the prediction phase
     def model_score(self, inputs):
@@ -136,9 +121,6 @@ class PairwiseTraining(BaseTraining):
         
         positive_inputs, negative_inputs = next(generator_X)
         
-        current_best = 0
-        model_path = os.path.join(self.path_store, self.model.name+".h5")
-        
         if draw_graph:
             self.draw_graph(positive_inputs, negative_inputs)
         
@@ -146,7 +128,6 @@ class PairwiseTraining(BaseTraining):
             c.on_train_start(self)
         
         for e in range(epoch):
-            loss_step = []
             
             #execute callbacks
             for c in self.callbacks:
@@ -159,76 +140,214 @@ class PairwiseTraining(BaseTraining):
                     c.on_step_start(self, e, s)
                     
                 s_time = time.time()
-                    
+                
+                # static TF computational graph for the traning step
                 loss = self.training_step(positive_inputs, negative_inputs)
-                loss_step.append(loss)
-                print("\rStep {}/{} | Loss {} | time {}".format(s, steps, loss, time.time()-s_time), end="\r")
-                # send loss
-                wandb.log({'loss': float(loss)})
+                
+                # next batch
                 positive_inputs, negative_inputs = next(generator_X)
                 
                 #execute callbacks
                 f_time = time.time()-s_time
                 for c in self.callbacks:
-                    c.on_step_end(self, e, s, loss, f_time)
-            
-            # perform evaluation if data is available
-            if self.validation_collection is not None:
-                metrics = self.evaluate_test_set(self.validation_collection)
-                print("\nEpoch {} | avg loss {} | recall@100 {} | map@20 {} | NDCG@20 {} | P@20 {}"\
-                                                  .format(e, 
-                                                   np.mean(loss_step),
-                                                   metrics["recall_100"],
-                                                   metrics["map_cut_20"],
-                                                   metrics["ndcg_cut_20"],
-                                                   metrics["P_20"]))
-                
-                wandb.log({'recall@100': metrics["recall_100"],
-                           'map@20': metrics["map_cut_20"],
-                           'ndcg@20': metrics["ndcg_cut_20"],
-                           'P@20': metrics["P_20"],
-                           'loss': np.mean(loss_step),
-                           'epoch': e})
-                
-                if metrics[self.comparation_metric] > current_best:
-                    current_best = metrics[self.comparation_metric]
-                    save_model_weights(model_path, self.model)
-                    wandb.run.summary["best_"+self.comparation_metric] = current_best
-                    print("Saved current best with score:", current_best)
-            else:
-                print("\nEpoch {} | avg loss {} | ".format(e, np.mean(loss_step)))
+                    c.on_step_end(self, e, s, float(loss), f_time)
             
             #execute callbacks
             for c in self.callbacks:
-                c.on_epoch_end(self, e, np.mean(loss_step))
-        
+                c.on_epoch_end(self, e)
+                
+        #execute callbacks
         for c in self.callbacks:
-            c.on_train_end(self)
-        
-        # load best model and test    
-        if current_best>0:
-            load_model_weights(model_path, self.model)
-            print("Loaded current best with score:", current_best)
-        
-        if self.test_collection is not None:
-            metrics = self.evaluate_test_set(self.test_collection)
-            print(metrics)
-            wandb.run.summary["test_"+self.comparation_metric] = metrics["ndcg_cut_20"]
+            c.on_train_end(self)      
 
-            print("\n recall@100 {} | map@20 {} | NDCG@20 {} | P@20 {}"\
-                                              .format(
-                                               metrics["recall_100"],
-                                               metrics["map_cut_20"],
-                                               metrics["ndcg_cut_20"],
-                                               metrics["P_20"]))
-                                                                                          
-                 
+class CrossValidation(BaseTraining):
+    def __init__(self,
+                 loss=hinge_loss,
+                 wandb_config=None,
+                 callbacks=[],
+                 **kwargs):
+        super(CrossValidation, self).__init__(loss=loss, **kwargs)
+        self.wandb_config = wandb_config
+        self.callbacks = callbacks
+                
+    def train(self, epoch, draw_graph=False):
+        
+        print("Start the Cross validation for", self.train_collection.get_n_folds(), "folds")
+        
+        temp_dir = tempfile.mkdtemp()
+        
+        try:
+            # save model init state
+            save_model_weights(os.path.join(temp_dir,"temp_weights.h5"), self.model)
+            best_test_scores = []
+            for i, collections in enumerate(self.train_collection.generator()):
+                print("Prepare FOLD", i)
+                
+                train_collection, test_collection = collections
+                
+                # show baseline metrics over the previous ranking order
+                pre_metrics = test_collection.evaluate_pre_rerank()
+                print("Evaluation of the original ranking order")
+                for n,m in pre_metrics:
+                    print(n,m)
+                
+                
+                # reset all the states
+                set_random_seed()
+                K.clear_session()
+
+                # load model init state
+                load_model_weights(os.path.join(temp_dir,"temp_weights.h5"), self.model)
+                
+                self.wandb_config["name"] = "Fold_0"+str(i)+"_"+self.wandb_config["name"]
+                
+                # create evaluation callback
+                if self.wandb_config is not None:
+                    wandb_val_logger = WandBValidationLogger(wandb_args=self.wandb_config,
+                                                             steps_per_epoch=train_collection.get_steps(),
+                                                             validation_collection=test_collection)
+                else:
+                    raise KeyError("Please use wandb for now!!!")
+                    
+                best_test_scores.append(wandb_val_logger.current_best)
+                    
+                callbacks = [wandb_val_logger]+ self.callbacks
+                
+                print("Train and test FOLD", i)
+                
+                pairwise_training = PairwiseTraining(model=self.model,
+                                                         train_collection=train_collection,
+                                                         loss=self.loss,
+                                                         optimizer=self.optimizer,
+                                                         callbacks=callbacks)
+                
+                pairwise_training.train(epoch, draw_graph=draw_graph)
             
+            x_score = sum(best_test_scores)/len(best_test_scores)
+            print("X validation best score:", x_score)
+            wandb_val_logger.wandb.run.summary["best_xval_"+wandb_val_logger.comparison_metric] = x_score
             
+        except Exception as e:
+            raise e # maybe handle the exception in the future
+        finally:
+            # always remove the temp directory
+            print("Remove {}".format(temp_dir))
+            shutil.rmtree(temp_dir)
+        
+         
 # Create a more abstract class that uses common elemetns like, b_size, transform_input etc...
+
+class BaseCollection:
+    def __init__(self, 
+                 transform_inputs_fn=None, 
+                 b_size=64, 
+                 **kwargs):
+        self.transform_inputs_fn = transform_inputs_fn
+        self.b_size = b_size
+    
+    def set_transform_inputs_fn(self, transform_inputs_fn):
+        # build style method
+        self.transform_inputs_fn = transform_inputs_fn
+        return self
+    
+    def batch_size(self, b_size=32):
+        # build style method
+        self.b_size = b_size
+        return self
+    
+    def get_config(self):
+        data_json = {
+            "b_size": self.b_size
+        } 
+        
+        return data_json
+    
+    def generator(self, **kwargs):
+        # generator for the query, pos and negative docs
+        gen_X = self._generate(**kwargs)
+        
+        if self.transform_inputs_fn is not None:
+            gen_X = self.transform_inputs_fn(gen_X)
+        
+        # finally yield the input to the model
+        for X in gen_X:
+            yield X
+    
+    def save(self, path):
+        with open(path+".p", "wb") as f:
+            pickle.dump(self.get_config(), f)
             
-class TestCollection:
-    def __init__(self, query_list, goldstandard_trec_file, query_docs, trec_script_eval_path, transform_inputs_fn=None, b_size=64, **kwargs):
+    @classmethod
+    def load(cls, path):
+        with open(path+".p", "rb") as f:
+            config = pickle.load(f)
+        
+        return cls(**config)
+    
+class CrossValidationCollection(BaseCollection):
+    """
+    Helper class to store the folds data and build the respective Train and Test Collections
+    """
+    def __init__(self, 
+                 folds_query_list,
+                 folds_goldstandard,
+                 folds_goldstandard_trec_file, 
+                 folds_query_docs, 
+                 trec_script_eval_path,
+                 **kwargs):
+        super(CrossValidationCollection, self).__init__(**kwargs)
+        self.folds_query_list = folds_query_list 
+        self.folds_goldstandard = folds_goldstandard
+        self.folds_goldstandard_trec_file = folds_goldstandard_trec_file
+        self.folds_query_docs = folds_query_docs
+        self.trec_script_eval_path = trec_script_eval_path
+        
+        # assert fold size
+    
+    def get_n_folds(self):
+        return len(self.folds_query_list)
+    
+    def _generate(self, **kwargs):
+
+        for i in range(len(self.folds_query_list)):
+            # create the folds
+            test_query = self.folds_query_list[i]
+            test_goldstandard_trec_file = self.folds_goldstandard_trec_file[i]
+            test_query_docs = self.folds_query_docs[i]
+
+            train_query = flat_list(self.folds_query_list[:i] + self.folds_query_list[i+1:])
+            train_goldstandard = merge_dicts(self.folds_goldstandard[:i] + self.folds_goldstandard[i+1:])
+            train_query_docs = merge_dicts(self.folds_query_docs[:i] + self.folds_query_docs[i+1:])
+            
+            train_collection = TrainCollection(train_query, train_goldstandard, train_query_docs)
+            
+            test_collection = TestCollection(test_query, test_goldstandard_trec_file, test_query_docs, self.trec_script_eval_path, train_collection.skipped_queries)
+            
+
+            yield train_collection, test_collection
+
+    def get_config(self):
+        super_config = super().get_config()
+        
+        data_json = {
+            "folds_query_list": self.folds_query_list,
+            "folds_goldstandard": self.folds_goldstandard,
+            "folds_goldstandard_trec_file": self.folds_goldstandard_trec_file,
+            "folds_query_docs": self.folds_query_docs,
+            "trec_script_eval_path": self.trec_script_eval_path
+        } 
+        
+        return dict(data_json, **super_config) #fast dict merge
+    
+    
+class TestCollection(BaseCollection):
+    def __init__(self, 
+                 query_list, 
+                 goldstandard_trec_file, 
+                 query_docs, 
+                 trec_script_eval_path,
+                 skipped_queries = [],
+                 **kwargs):
         """
         query_list - must be a list with the following format :
                      [
@@ -252,59 +371,34 @@ class TestCollection:
                        
         trec_script_eval_path - path to the TREC evaluation script
         """
+        super(TestCollection, self).__init__(**kwargs)
         self.query_list = query_list 
         self.goldstandard_trec_file = goldstandard_trec_file 
         self.query_docs = query_docs
         self.trec_script_eval_path = trec_script_eval_path
-        self.transform_inputs_fn = transform_inputs_fn
+        self.skipped_queries = skipped_queries
         
-    def batch_size(self, b_size=32):
-        # build style method
-        self.b_size = b_size
-        return self
     
     def get_config(self):
+        super_config = super().get_config()
+        
         data_json = {
             "query_list": self.query_list,
             "goldstandard_trec_file": self.goldstandard_trec_file,
             "query_docs": self.query_docs,
-            "trec_script_eval_path": self.trec_script_eval_path
+            "trec_script_eval_path": self.trec_script_eval_path,
+            "skipped_queries": self.skipped_queries
         } 
         
-        return data_json
+        return dict(data_json, **super_config) #fast dict merge
     
-    def save(self, path):
-        with open(path+".p", "wb") as f:
-            pickle.dump(self.get_config(), f)
-            
-    @staticmethod
-    def load(path):
-        with open(path+".p", "rb") as f:
-            config = pickle.load(f)
-        
-        return TestCollection(**config)
-    
-    def set_transform_inputs_fn(self, transform_inputs_fn):
-        # build style method
-        self.transform_inputs_fn = transform_inputs_fn
-        return self
-    
-    def generator(self):
-        # generator for the query, pos and negative docs
-        gen_Y = self.__generate()
-        
-        if self.transform_inputs_fn is not None:
-            gen_Y = self.transform_inputs_fn(gen_Y)
-        
-        # finally yield the input to the model
-        for Y in gen_Y:
-            yield Y
-    
-    def __generate(self):
+    def _generate(self, **kwargs):
         
         for query_data in self.query_list:
-            for i in range(0, len(self.query_docs[query_data["id"]]), self.b_size):
+            if query_data["id"] in self.skipped_queries:
+                continue
                 
+            for i in range(0, len(self.query_docs[query_data["id"]]), self.b_size):
                 docs = self.query_docs[query_data["id"]][i:i+self.b_size]
                 
                 yield query_data["id"], query_data["query"], docs
@@ -357,17 +451,14 @@ class TestCollection:
             shutil.rmtree(temp_dir)
             
         return metrics
-            
-            
-class TrainCollection:
+
+class TrainCollection(BaseCollection):
     def __init__(self, 
                  query_list, 
                  goldstandard, 
                  query_docs_subset=None, 
                  use_relevance_groups=False,
-                 transform_inputs_fn=None, 
                  verbose=True, 
-                 b_size=64, 
                  **kwargs):
         """
         query_list - must be a list with the following format :
@@ -398,12 +489,11 @@ class TrainCollection:
                                            ...
                                        }
         """
+        super(TrainCollection, self).__init__(**kwargs)
         self.query_list = query_list # [{query data}]
         self.goldstandard = goldstandard # {query_id:[relevance docs]}
         self.use_relevance_groups = use_relevance_groups
-        self.transform_inputs_fn = transform_inputs_fn
         self.verbose = verbose
-        self.b_size = b_size
         
         if "sub_set_goldstandard" in kwargs:
             self.sub_set_goldstandard = kwargs.pop("sub_set_goldstandard")
@@ -414,9 +504,8 @@ class TrainCollection:
             self.collection = kwargs.pop("collection")
         else:
             self.collection = None
-            
-        if len(kwargs)>0:
-            raise ValueError("Following arguments were not recognized:", kwargs.keys())
+        
+        self.skipped_queries = []
         
         self.__build(query_docs_subset)
     
@@ -437,6 +526,11 @@ class TrainCollection:
   
         # filter the goldstandard
         for _id, relevance in query_docs_subset.items():
+            
+            if _id not in self.goldstandard:
+                self.skipped_queries.append(_id)
+                continue
+            
             self.sub_set_goldstandard[_id] = defaultdict(list)
             
             for doc in relevance:
@@ -452,7 +546,13 @@ class TrainCollection:
                 
                 #add to the collection
                 self.collection[doc["id"]] = doc["text"]
-
+        
+        # remove the skipped queries from the data
+        for skipped in self.skipped_queries:
+            _index = index_from_list(self.query_list, lambda x: x["id"]==skipped)
+            if _index>-1:
+                del self.query_list[_index]
+        
         # stats
         if self.verbose:
             max_keys = max(map(lambda x:max(x.keys()), self.sub_set_goldstandard.values()))
@@ -463,16 +563,6 @@ class TrainCollection:
                 print("Mean number of relevance type({}) in the queries of the goldstandard sub set: {}".format(k, sum(map(lambda x: len(x[k]), self.sub_set_goldstandard.values()))/len(self.sub_set_goldstandard)))
             
             print("Sub Collection size", len(self.collection))
-    
-    def batch_size(self, b_size=32):
-        # build style method
-        self.b_size = b_size
-        return self
-    
-    def set_transform_inputs_fn(self, transform_inputs_fn):
-        # build style method
-        self.transform_inputs_fn = transform_inputs_fn
-        return self
     
     def __get_goldstandard(self):
         
@@ -489,22 +579,8 @@ class TrainCollection:
         total_positives = sum(map(lambda x: sum([ len(x[k]) for k in x.keys() if k>0]), training_data.values()))
           
         return total_positives//self.b_size
-    
-    def generator(self, collection=None):
-        # generator for the query, pos and negative docs
-        gen_X = self.__generator(collection)
-        
-        # apply transformation ??
-        if self.transform_inputs_fn is not None:
-            gen_X = self.transform_inputs_fn(gen_X)
-        
-        # finally yield the input to the model
-        while True:
-            yield next(gen_X)
-                
-        
-    
-    def __generator(self, collection=None):
+
+    def _generate(self, collection=None, **kwargs):
         
         # sanity check
         assert(not(self.sub_set_goldstandard==None and collection==None))
@@ -557,6 +633,8 @@ class TrainCollection:
             yield (np.array(y_query), np.array(y_pos_doc), np.array(y_neg_doc))
     
     def get_config(self):
+        super_config = super().get_config()
+        
         data_json = {
             "query_list": self.query_list,
             "goldstandard": self.goldstandard,
@@ -564,18 +642,66 @@ class TrainCollection:
             "verbose": self.verbose,
             "sub_set_goldstandard": self.sub_set_goldstandard,
             "collection": self.collection,
-            "b_size": self.b_size,
         } 
         
-        return data_json
+        return dict(data_json, **super_config) #fast dict merge
     
-    def save(self, path):
-        with open(path+".p", "wb") as f:
-            pickle.dump(self.get_config(), f)
-            
-    @staticmethod
-    def load(path):
-        with open(path+".p", "rb") as f:
-            config = pickle.load(f)
+
+def sentence_splitter_builder(tokenizer, mode=0, max_sentence_size=20):
+    """
+    Return a transform_inputs_fn for training and test as a tuple
+    
+    mode 0: use fixed sized window for the split
+    mode 1: split around a query-document match with a fixed size
+    """
+    def train_splitter(data_generator):
         
-        return TrainCollection(**config)
+        while True:
+        
+            # get the batch triplet
+            query, pos_docs, neg_docs = next(data_generator)
+            # tokenization
+            query = tokenizer.texts_to_sequences(query)
+            pos_docs = tokenizer.texts_to_sequences(pos_docs)
+            neg_docs = tokenizer.texts_to_sequences(neg_docs)
+
+            if any([ len(doc)==0 for doc in pos_docs]):
+                continue # try a new resampling, NOTE THIS IS A EASY FIX PLS REDO THIS!!!!!!!
+                         # for obvious reasons
+            
+            # sentence splitting
+            if mode==0:
+                for i in range(len(pos_docs)):
+                    pos_docs[i] = [ pos_docs[i][s:s+max_sentence_size] for s in range(0,len(pos_docs[i]),max_sentence_size) ]
+                    neg_docs[i] = [ neg_docs[i][s:s+max_sentence_size] for s in range(0,len(neg_docs[i]),max_sentence_size) ]
+            else:
+                raise NotImplementedError("Missing implmentation for mode "+str(mode))
+
+            yield query, pos_docs, neg_docs
+            
+            
+    def test_splitter(data_generator):
+        
+        for _id, query, docs in data_generator:
+        
+            # get the batch triplet
+            query, pos_docs, neg_docs = next(data_generator)
+            # tokenization
+            tokenized_query = tokenizer.texts_to_sequences([query])[0]
+            for doc in docs:
+                if isinstance(doc["text"], list):
+                    continue
+                doc["text"] = tokenizer.texts_to_sequences([doc["text"]])[0]
+
+            # sentence splitting
+            if mode==0:
+                for i in range(len(docs)):
+                    docs[i]["text"] = [ docs[i]["text"][s:s+max_sentence_size] for s in range(0,len(docs[i]["text"]), max_sentence_size) ]
+            else:
+                raise NotImplementedError("Missing implmentation for mode "+str(mode))
+
+            yield _id, tokenized_query, docs
+        
+    return train_splitter, test_splitter
+
+

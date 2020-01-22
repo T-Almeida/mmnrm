@@ -7,17 +7,29 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 
+import os
+import time
+import wandb
+import tempfile
+import shutil
+import math
+
+from collections import defaultdict
+
 class Callback:
+    def __init__(self, **kwargs):
+        pass
+    
     def on_epoch_start(self, training_obj, epoch):
         pass
     
-    def on_epoch_end(self, training_obj, epoch, avg_loss):
+    def on_epoch_end(self, training_obj, epoch):
         pass
         
     def on_step_start(self,training_obj, epoch, step):
         pass
         
-    def on_step_end(self, training_obj, epoch, step, loss):
+    def on_step_end(self, training_obj, epoch, step, loss, time):
         pass
     
     def on_train_start(self, training_obj):
@@ -37,8 +49,8 @@ class TriangularLR(Callback):
             self,
             base_lr=0.001,
             max_lr=0.006,
-            step_size=6040.,
-            mode='triangular',
+            step_size=2020.,
+            mode='triangular2',
             gamma=1.,
             scale_fn=None,
             scale_mode='cycle'):
@@ -94,7 +106,7 @@ class TriangularLR(Callback):
             return self.base_lr + (self.max_lr - self.base_lr) * \
                 np.maximum(0, (1 - x)) * self.scale_fn(self.clr_iterations)
         
-    def on_step_end(self, training_obj, epoch, step, loss):
+    def on_step_end(self, training_obj, epoch, step, loss, time):
 
         self.trn_iterations += 1
         self.clr_iterations += 1
@@ -128,9 +140,17 @@ class LRfinder(Callback):
         self.lrs = []
         self.step_count = 0
         
-    def on_step_end(self, training_obj, epoch, step, loss):
+        self.temp_dir = tempfile.mkdtemp()
+    
+    def on_train_start(self, training_obj):
+        save_model_weights(os.path.join(self.temp_dir,"temp.h5"), training_obj.model)
+    
+    def on_step_end(self, training_obj, epoch, step, loss, time):
 
         if self.step_count%self.batches_lr_update==0:
+            
+            load_model_weights(os.path.join(self.temp_dir,"temp.h5"), training_obj.model)
+            
             lr = self.learning_rates[self.step_count//self.batches_lr_update]            
             K.set_value(training_obj.optimizer.lr, lr)
 
@@ -138,7 +158,11 @@ class LRfinder(Callback):
             self.lrs.append(lr)
         self.step_count+=1
 
-    def on_train_end(self, logs=None):
+    def on_train_end(self, training_obj):
+        
+        load_model_weights(os.path.join(self.temp_dir,"temp.h5"), training_obj.model)
+        
+        shutil.rmtree(self.temp_dir)
                 
         plt.figure(figsize=(12, 6))
         plt.plot(self.lrs, self.losses)
@@ -153,8 +177,9 @@ class Validation(Callback):
                  validation_collection=None, 
                  test_collection=None, 
                  comparison_metric="ndcg_cut_20", 
-                 path_store = "/backup/NIR/best_model_weights"):
-        super(Validation, self).__init__()
+                 path_store = "/backup/NIR/best_model_weights",
+                 **kwargs):
+        super(Validation, self).__init__(**kwargs)
         self.validation_collection = validation_collection
         self.test_collection = test_collection
         self.current_best = 0
@@ -194,7 +219,7 @@ class Validation(Callback):
             save_model_weights(self.model_path, training_obj.model)
             print("Saved current best:", self.current_best)
         
-        print("\nEpoch {} | recall@100 {} | map@20 {} | NDCG@20 {} | P@20 {}"\
+        print("Epoch {} | recall@100 {} | map@20 {} | NDCG@20 {} | P@20 {}"\
                                                   .format(epoch, 
                                                    metrics["recall_100"],
                                                    metrics["map_cut_20"],
@@ -211,19 +236,42 @@ class Validation(Callback):
         
         metrics = self.evaluate(training_obj.model_score, self.test_collection)
         print("\nTestSet final evaluation | recall@100 {} | map@20 {} | NDCG@20 {} | P@20 {}"\
-                                                  .format(epoch, 
+                                                  .format(
                                                    metrics["recall_100"],
                                                    metrics["map_cut_20"],
                                                    metrics["ndcg_cut_20"],
                                                    metrics["P_20"]))
         return metrics
 
-class WandBValidationLogger(Validation, PrinterEpoch):
-    def __init__(self, wandb, **kwargs):
-        Validation.__init__(**kwargs)
-        PrinterEpoch.__init__(**kwargs)
-        self.wandb = wandb
+class PrinterEpoch(Callback):
+    def __init__(self, steps_per_epoch=None, **kwargs):
+        super(PrinterEpoch, self).__init__(**kwargs)
+        self.losses_per_epoch = []
+        self.steps_per_epoch = steps_per_epoch
+    
+    def on_epoch_start(self, training_obj, epoch):
+        self.losses_per_epoch.append([])
+    
+    def on_epoch_end(self, training_obj, epoch):
+        avg_loss = sum(self.losses_per_epoch[-1])/len(self.losses_per_epoch[-1])
+        print("Epoch {} | avg Loss {}".format(epoch, avg_loss))
+        return avg_loss
         
+    def on_step_end(self, training_obj, epoch, step, loss, time):
+        self.losses_per_epoch[-1].append(loss)
+        print("\rStep {}/{} | Loss {} | time {}".format(step, self.steps_per_epoch, loss, time), end="\r")
+    
+class WandBValidationLogger(Validation, PrinterEpoch):
+    def __init__(self, wandb_args, **kwargs):
+        Validation.__init__(self, **kwargs)
+        PrinterEpoch.__init__(self, **kwargs)
+        self.wandb = wandb
+        self.wandb.init(**wandb_args)
+    
+    def on_epoch_start(self, training_obj, epoch):
+        PrinterEpoch.on_epoch_start(self, training_obj, epoch)
+        Validation.on_epoch_start(self, training_obj, epoch)
+    
     def on_epoch_end(self, training_obj, epoch):
         avg_loss = PrinterEpoch.on_epoch_end(self, training_obj, epoch)
         metrics = Validation.on_epoch_end(self, training_obj, epoch)
@@ -234,7 +282,7 @@ class WandBValidationLogger(Validation, PrinterEpoch):
                        'loss': avg_loss,
                        'epoch': epoch})
         
-        self.wandb.run.summary["best_"+self.comparation_metric] = self.current_best
+        self.wandb.run.summary["best_"+self.comparison_metric] = self.current_best
         
     def on_step_end(self, training_obj, epoch, step, loss, time):
         PrinterEpoch.on_step_end(self, training_obj, epoch, step, loss, time)
@@ -243,25 +291,29 @@ class WandBValidationLogger(Validation, PrinterEpoch):
     def on_train_end(self, training_obj):
         metrics = Validation.on_train_end(self, training_obj)
         
-        self.wandb.run.summary["test_"+self.comparation_metric] = metrics["ndcg_cut_20"]
+        self.wandb.run.summary["test_"+self.comparison_metric] = metrics["ndcg_cut_20"]
         
-class PrinterEpoch(Callback):
+def step_decay(epoch, initial_lrate):
+
+    drop = 0.5
+    epochs_drop = 10.0
+    lrate = initial_lrate * math.pow(drop, math.floor((1+epoch)/epochs_drop))
     
-    def __init__(self, steps_per_epoch):
-        super(PrinterEpoch, self).__init__()
-        self.losses_per_epoch = []
-        self.steps_per_epoch = steps_per_epoch
-    
-    def on_epoch_start(self, training_obj, epoch):
-        self.losses_per_epoch.append([])
-    
+    return lrate
+
+
+class LearningRateScheduler(Callback):
+    def __init__(self, initial_learning_rate, lr_fn=step_decay, **kwargs):
+        super(LearningRateScheduler, self).__init__(**kwargs)
+        self.initial_learning_rate = initial_learning_rate
+        self.lr_fn = lr_fn
+        
     def on_epoch_end(self, training_obj, epoch):
-        avg_loss = sum(self.losses_per_epoch[-1])/len(self.losses_per_epoch[-1])
-        print("Epoch {} | avg Loss {}".format(epoch, avg_loss, end="\r")
-        return avg_loss
         
-    def on_step_end(self, training_obj, epoch, step, loss, time):
-        self.losses_per_epoch[-1].append(loss)
-        print("\rStep {}/{} | Loss {} | time {}".format(step, self.steps_per_epoch, loss, time), end="\r")
+        new_lr = self.lr_fn(epoch, self.initial_learning_rate)
+
+        # update the lr
+        K.set_value(training_obj.optimizer.lr, new_lr)
+
     
 

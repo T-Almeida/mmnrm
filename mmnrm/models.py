@@ -95,6 +95,37 @@ def build_PACRR(max_q_length,
     model = tf.keras.models.Model(inputs=[input_query, input_sentence, input_query_idf], outputs=x, name=name_model)
     return model
 
+def sentence_PACRR(pacrr, sentence_per_doc, type_combination=0):
+    """
+    type_combination - 0: use MLP
+                       1: use WeightedCombination + MLP
+                       2: GRU
+    """
+    max_q_length = pacrr.input[0].shape[1]
+    max_d_length = pacrr.input[1].shape[1]
+    
+    input_query = tf.keras.layers.Input((max_q_length,), dtype="int32")
+    input_query_idf = tf.keras.layers.Input((max_q_length,), dtype="float32")
+    input_doc = tf.keras.layers.Input((sentence_per_doc,max_d_length), dtype="int32")
+    
+    #aggregate = tf.keras.layers.GRU(1, activation="relu")
+    #aggregate = WeightedCombination()
+    
+    def aggregate(x):
+        #x = tf.keras.layers.Dense(25, activation="relu")(x)
+        return tf.keras.layers.Dense(1, activation="relu")(x)
+    
+    sentences = tf.unstack(input_doc, axis=1)
+    pacrr_sentences = []
+    for sentence in sentences:
+        pacrr_sentences.append(pacrr([input_query, sentence, input_query_idf]))
+        
+    pacrr_sentences = tf.stack(pacrr_sentences, axis=1)
+    
+    score = aggregate(tf.squeeze(pacrr_sentences, axis=-1))
+    
+    return  tf.keras.models.Model(inputs=[input_query, input_doc, input_query_idf], outputs=score, name="Sentence_"+pacrr.name)
+        
 def semantic_exact_PACRR(semantic_pacrr, 
                          exact_pacrr,
                          type_combination=0,

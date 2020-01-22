@@ -2,6 +2,8 @@
 Auxiliar code needed to better handle text inputs
 """
 from collections import defaultdict
+from os.path import join
+import random
 
 def TREC04_queries_transform(queires, type_query="title"):
     return list(map(lambda x:{"id":x["number"],
@@ -28,3 +30,15 @@ def TREC04_results_transform(results):
     for _id, relevance in results.items():
         _g[_id] = list(map(lambda x:{"id":x["DOCNO"], "text":x["HEADER"]+" "+x["HEADLINE"]+" "+x["TEXT"]}, relevance))
     return _g
+
+def TREC04_merge_goldstandard_files(list_of_files, path_to_store):
+    
+    name = join(path_to_store, "temp_gs_{}.txt".format(int(random.random()*10000)))
+    with open(name,"w") as wf:
+        for f in list_of_files:
+            with open(f,"r") as rf:
+                for line in rf:
+                    wf.write(rf)
+                    
+    return name
+    
