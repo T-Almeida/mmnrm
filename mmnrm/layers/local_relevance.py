@@ -87,7 +87,10 @@ class MultipleNgramConvs(tf.keras.layers.Layer):
     
     def compute_mask(self, x, mask=None):
         # extract just the query mask
-        return mask[:,:,0]
+        if self.use_mask:
+            return mask[:,:,0]
+        else:
+            return None
     
 
 class MaskedSoftmax(tf.keras.layers.Layer): 

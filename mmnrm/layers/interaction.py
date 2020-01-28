@@ -38,19 +38,29 @@ class MatrixInteractionMasking(MatrixInteraction):
     Class that handle the computation of the interaction matrix mask 
     """
     
-    def __init__(self, mask_value=0, **kwargs):
+    def __init__(self, mask_value=0, use_mask=True, **kwargs):
         super(MatrixInteractionMasking, self).__init__(**kwargs)
         self.mask_value = mask_value
+        self.use_mask = use_mask
     
     def compute_mask_embedding(self, embedding):
         return K.not_equal(embedding, self.mask_value)
     
+    def compute_mask_dtype(self, x):
+        mask = self.compute_mask(x)
+        if mask is not None:
+            mask = K.cast(mask, dtype=self.dtype)
+            
+        return mask
+    
     def compute_mask(self, x, mask=None):
-        
-        query_mask = K.cast(self.compute_mask_embedding(x[0]), dtype=self.dtype)
-        document_mask = K.cast(self.compute_mask_embedding(x[1]), dtype=self.dtype)
-        
-        return K.cast(tf.einsum("bq,bd->bqd", query_mask, document_mask), dtype="bool")
+        if self.use_mask:
+            query_mask = K.cast(self.compute_mask_embedding(x[0]), dtype=self.dtype)
+            document_mask = K.cast(self.compute_mask_embedding(x[1]), dtype=self.dtype)
+
+            return K.cast(tf.einsum("bq,bd->bqd", query_mask, document_mask), dtype="bool")
+        else:
+            return None
     
     
 class ExactInteractions(MatrixInteractionMasking): 
@@ -69,11 +79,14 @@ class ExactInteractions(MatrixInteractionMasking):
         
         assert(len(x) in [2,4]) # sanity check
         
-        mask = K.cast(self.compute_mask(x), dtype=self.dtype)
+        mask = self.compute_mask_dtype(x)
         
         query_matrix, sentence_matrix = self._query_sentence_vector_to_matrices(x[0], x[1])
         
-        interaction_matrix = K.cast(K.equal(query_matrix, sentence_matrix), dtype=self.dtype) * mask
+        interaction_matrix = K.cast(K.equal(query_matrix, sentence_matrix), dtype=self.dtype)
+        if mask is not None:
+            interaction_matrix = interaction_matrix * mask
+            
         interaction_matrix = K.expand_dims(interaction_matrix)
         
         if len(x)==4:
@@ -106,7 +119,12 @@ class SemanticBaseInteraction(MatrixInteractionMasking):
         
     def _forward_interaction_matrix(self, query_embeddings, sentence_embeddings, mask):
         
-        interaction_matrix = tf.einsum("bqe,bde->bqd", query_embeddings, sentence_embeddings) * mask
+        
+        interaction_matrix = tf.einsum("bqe,bde->bqd", query_embeddings, sentence_embeddings) 
+        
+        if mask is not None:
+            interaction_matrix = interaction_matrix * mask
+            
         interaction_matrix = K.expand_dims(interaction_matrix)
         
         if self.learn_term_weights:
@@ -117,9 +135,10 @@ class SemanticBaseInteraction(MatrixInteractionMasking):
             
             query_projection_matrix, sentence_projection_matrix = self._query_sentence_vector_to_matrices(query_projection, sentence_projection) 
             
-            query_projection_matrix = query_projection_matrix * mask
-            sentence_projection_matrix = sentence_projection_matrix * mask
-            
+            if mask is not None:
+                query_projection_matrix = query_projection_matrix * mask
+                sentence_projection_matrix = sentence_projection_matrix * mask
+                
             interaction_matrix = K.concatenate([interaction_matrix, query_projection_matrix, sentence_projection_matrix])
             
         return interaction_matrix
@@ -172,7 +191,8 @@ class SemanticInteractions(SemanticBaseInteraction):
         x[1] - padded sentence tokens id's
         """
         
-        mask = K.cast(self.compute_mask(x), dtype=self.dtype)
+        
+        mask = self.compute_mask_dtype(x)
         
         # embbed the tokens
         query_embeddings = tf.nn.embedding_lookup(self.embeddings, x[0])
@@ -275,7 +295,7 @@ class ContextedSemanticInteractions(SemanticBaseInteraction):
             assert mask is not None
             interaction_matrix = x * mask
         elif len(x)==2:
-            mask = K.cast(self.compute_mask(x), dtype=self.dtype)
+            mask = self.compute_mask_dtype(x)
             
             # get query and sentence context embeddings
             if self.context_embedding_layer is not None:

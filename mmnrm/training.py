@@ -88,7 +88,7 @@ class PairwiseTraining(BaseTraining):
 
         # using auto-diff to get the gradients
         grads = tape.gradient(loss, self.model.trainable_weights)
-
+        #tf.print(grads)
         # applying the gradients using an optimizer
         self.optimizer.apply_gradients(zip(grads, self.model.trainable_weights))
 
@@ -599,8 +599,9 @@ class TrainCollection(BaseCollection):
             y_neg_doc = []
             
             # build $batch_size triples and yield
-            for _ in range(self.b_size):
-                selected_query = self.query_list[random.randint(0, len(self.query_list)-1)]
+            query_indexes = random.sample(population=list(range(len(self.query_list))), k=self.b_size)
+            for q_i in query_indexes:
+                selected_query = self.query_list[q_i]
                 #print(selected_query["id"])
                 # select the relevance group, (only pos)
                 positive_keys=list(training_data[selected_query["id"]].keys())
@@ -647,15 +648,21 @@ class TrainCollection(BaseCollection):
         return dict(data_json, **super_config) #fast dict merge
     
 
-def sentence_splitter_builder(tokenizer, mode=0, max_sentence_size=20):
+    
+def sentence_splitter_builder(tokenizer, mode=0, max_sentence_size=21):
     """
     Return a transform_inputs_fn for training and test as a tuple
     
     mode 0: use fixed sized window for the split
     mode 1: split around a query-document match with a fixed size
     """
+    if mode==1:
+        half_window = max_sentence_size//2
+        min_w = lambda x: max(0,x-half_window)
+        max_w = lambda x,l: min(x+half_window,l)+1
+    
     def train_splitter(data_generator):
-        
+
         while True:
         
             # get the batch triplet
@@ -669,39 +676,69 @@ def sentence_splitter_builder(tokenizer, mode=0, max_sentence_size=20):
                 continue # try a new resampling, NOTE THIS IS A EASY FIX PLS REDO THIS!!!!!!!
                          # for obvious reasons
             
+            new_pos_docs = []
+            new_neg_docs = []
+            
             # sentence splitting
             if mode==0:
                 for i in range(len(pos_docs)):
-                    pos_docs[i] = [ pos_docs[i][s:s+max_sentence_size] for s in range(0,len(pos_docs[i]),max_sentence_size) ]
-                    neg_docs[i] = [ neg_docs[i][s:s+max_sentence_size] for s in range(0,len(neg_docs[i]),max_sentence_size) ]
+                    new_pos_docs.append([])
+                    new_neg_docs.append([])
+                    for s in range(0, len(pos_docs[i]), max_sentence_size):
+                        new_pos_docs[-1].append(pos_docs[i][s:s+max_sentence_size])
+                    for s in range(0, len(neg_docs[i]), max_sentence_size):
+                        new_neg_docs[-1].append(neg_docs[i][s:s+max_sentence_size])
+            elif mode==1:
+
+                for b in range(len(pos_docs)):
+                    new_pos_docs.append([])
+                    new_neg_docs.append([])
+                    # split by exact matching
+                    for t_q in query[b]:
+                        # exact math for the pos_document
+                        for i,t_pd in enumerate(pos_docs[b]):
+                            if t_pd==t_q:
+                                new_pos_docs[-1].append(pos_docs[b][min_w(i):max_w(i,len(pos_docs[b]))])
+
+                        # exact math for the neg_document
+                        for i,t_nd in enumerate(neg_docs[b]):
+                            if t_nd==t_q:
+                                new_neg_docs[-1].append(neg_docs[b][min_w(i):max_w(i,len(neg_docs[b]))])
+
             else:
                 raise NotImplementedError("Missing implmentation for mode "+str(mode))
 
-            yield query, pos_docs, neg_docs
+            yield query, new_pos_docs, new_neg_docs
             
             
     def test_splitter(data_generator):
-        
+
         for _id, query, docs in data_generator:
-        
-            # get the batch triplet
-            query, pos_docs, neg_docs = next(data_generator)
+
             # tokenization
             tokenized_query = tokenizer.texts_to_sequences([query])[0]
             for doc in docs:
                 if isinstance(doc["text"], list):
-                    continue
+                    continue # cached tokenization
                 doc["text"] = tokenizer.texts_to_sequences([doc["text"]])[0]
 
-            # sentence splitting
-            if mode==0:
-                for i in range(len(docs)):
-                    docs[i]["text"] = [ docs[i]["text"][s:s+max_sentence_size] for s in range(0,len(docs[i]["text"]), max_sentence_size) ]
-            else:
-                raise NotImplementedError("Missing implmentation for mode "+str(mode))
-
+                # sentence splitting
+                new_docs = []
+                if mode==0:
+                    for s in range(0,len(doc["text"]), max_sentence_size):
+                        new_docs.append(doc["text"][s:s+max_sentence_size])
+                elif mode==1:
+                    for t_q in tokenized_query:
+                        for i,t_d in enumerate(doc["text"]):
+                            if t_d==t_q:
+                                new_docs.append(doc["text"][min_w(i):max_w(i,len(doc["text"]))])
+                else:
+                    raise NotImplementedError("Missing implmentation for mode "+str(mode))
+                                                                    
+                doc["text"] = new_docs
+                                                                    
             yield _id, tokenized_query, docs
-        
+
     return train_splitter, test_splitter
 
 

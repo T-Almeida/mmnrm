@@ -4,7 +4,7 @@ from tensorflow.keras import backend as K
 from mmnrm.layers.interaction import SemanticInteractions, ExactInteractions
 from mmnrm.layers.local_relevance import MultipleNgramConvs, MaskedSoftmax
 from mmnrm.layers.transformations import MaskedConcatenate, ShuffleRows
-from mmnrm.layers.aggregation import WeightedCombination
+from mmnrm.layers.aggregation import WeightedCombination, KmaxAggregation
 
 def build_PACRR(max_q_length,
                 max_d_length,
@@ -15,7 +15,8 @@ def build_PACRR(max_q_length,
                 dense_hidden_units = None,
                 max_ngram = 3,
                 k_max = 2,
-                out_put_dim = 1,
+                activation="relu",
+                out_put_dim = 7,
                 shuffle_query_terms = False, 
                 k_polling_avg = None, # do k_polling avg after convolution
                 polling_avg = False, # do avg polling after convolution
@@ -38,7 +39,8 @@ def build_PACRR(max_q_length,
         interaction = SemanticInteractions(emb_matrix, 
                                            learn_term_weights=learn_term_weights, 
                                            trainable_embeddings=trainable_embeddings,
-                                           learn_context=learn_context)
+                                           learn_context=learn_context,
+                                           use_mask=True)
         
     ngram_convs = MultipleNgramConvs(max_ngram=max_ngram,
                                      k_max=k_max,
@@ -46,10 +48,13 @@ def build_PACRR(max_q_length,
                                      polling_avg=polling_avg,
                                      use_mask=use_mask,
                                      filters=filters,
-                                     activation="relu")
+                                     activation=activation)
     softmax_IDF = MaskedSoftmax()
-    concatenate = MaskedConcatenate(0)
-    shuffle = ShuffleRows()
+    
+    if use_mask:
+        concatenate = MaskedConcatenate(0)
+    else:
+        concatenate = tf.keras.layers.Concatenate()
     
     if dense_hidden_units is None:
         aggregation_layer = tf.keras.layers.LSTM(out_put_dim, 
@@ -59,7 +64,7 @@ def build_PACRR(max_q_length,
                                     unit_forget_bias=True, 
                                     recurrent_activation="hard_sigmoid", 
                                     bias_regularizer=None, 
-                                    activation="relu", 
+                                    activation=activation, 
                                     recurrent_initializer="orthogonal", 
                                     kernel_regularizer=None, 
                                     kernel_initializer="glorot_uniform",
@@ -84,6 +89,7 @@ def build_PACRR(max_q_length,
     x = ngram_convs(x)
     x = concatenate([x, norm_idf])
     if shuffle_query_terms:
+        shuffle = ShuffleRows()
         prefix_name += "S"
         x = shuffle(x)
     x = aggregation_layer(x)
@@ -95,7 +101,7 @@ def build_PACRR(max_q_length,
     model = tf.keras.models.Model(inputs=[input_query, input_sentence, input_query_idf], outputs=x, name=name_model)
     return model
 
-def sentence_PACRR(pacrr, sentence_per_doc, type_combination=0):
+def sentence_PACRR(pacrr, sentence_per_doc, type_combination=0, activation="relu"):
     """
     type_combination - 0: use MLP
                        1: use WeightedCombination + MLP
@@ -104,27 +110,34 @@ def sentence_PACRR(pacrr, sentence_per_doc, type_combination=0):
     max_q_length = pacrr.input[0].shape[1]
     max_d_length = pacrr.input[1].shape[1]
     
-    input_query = tf.keras.layers.Input((max_q_length,), dtype="int32")
-    input_query_idf = tf.keras.layers.Input((max_q_length,), dtype="float32")
-    input_doc = tf.keras.layers.Input((sentence_per_doc,max_d_length), dtype="int32")
+    input_query = tf.keras.layers.Input((max_q_length,), dtype="int32") # (None, Q)
+    input_query_idf = tf.keras.layers.Input((max_q_length,), dtype="float32") # (None, Q)
+    input_doc = tf.keras.layers.Input((sentence_per_doc, max_d_length), dtype="int32") # (None, P, S)
     
     #aggregate = tf.keras.layers.GRU(1, activation="relu")
     #aggregate = WeightedCombination()
     
     def aggregate(x):
         #x = tf.keras.layers.Dense(25, activation="relu")(x)
-        return tf.keras.layers.Dense(1, activation="relu")(x)
+        x = KmaxAggregation(k=5)(x)
+        #x = tf.squeeze(x, axis=-1)
+        x = tf.keras.layers.Dense(6, activation="selu")(x)
+        return tf.keras.layers.Dense(1, activation=None)(x)
     
-    sentences = tf.unstack(input_doc, axis=1)
+    #def aggregate(x):
+        #x = tf.keras.layers.Dense(25, activation="relu")(x)
+    #    return K.max(tf.squeeze(x, axis=-1), axis=-1, keepdims=True)
+    
+    sentences = tf.unstack(input_doc, axis=1) #[(None,S), (None,S), ..., (None,S)]
     pacrr_sentences = []
     for sentence in sentences:
         pacrr_sentences.append(pacrr([input_query, sentence, input_query_idf]))
         
     pacrr_sentences = tf.stack(pacrr_sentences, axis=1)
+    #pacrr_sentences = tf.squeeze(pacrr_sentences, axis=-1)
+    score = aggregate(pacrr_sentences)
     
-    score = aggregate(tf.squeeze(pacrr_sentences, axis=-1))
-    
-    return  tf.keras.models.Model(inputs=[input_query, input_doc, input_query_idf], outputs=score, name="Sentence_"+pacrr.name)
+    return tf.keras.models.Model(inputs=[input_query, input_doc, input_query_idf], outputs=score, name="Sentence_"+pacrr.name), pacrr_sentences
         
 def semantic_exact_PACRR(semantic_pacrr, 
                          exact_pacrr,

@@ -1,7 +1,7 @@
 import tensorflow as tf
 from tensorflow.keras import backend as K
 
-from mmnrm.utils import save_model_weights, load_model_weights
+from mmnrm.utils import save_model_weights, load_model_weights, set_random_seed
 
 import numpy as np
 
@@ -120,7 +120,7 @@ class LRfinder(Callback):
     adapted from: https://gist.github.com/WittmannF/c55ed82d27248d18799e2be324a79473
     """
     def __init__(self, min_lr, max_lr, steps=188, epoch=32, mom=0.9, stop_multiplier=None, 
-                 reload_weights=True, batches_lr_update=5):
+                 reload_weights=True, batches_lr_update=20):
         self.min_lr = min_lr
         self.max_lr = max_lr
         self.mom = mom
@@ -136,7 +136,9 @@ class LRfinder(Callback):
         self.learning_rates = np.geomspace(self.min_lr, self.max_lr, \
                                            num=self.iteration//self.batches_lr_update+1)
         
-        self.losses = []
+        self.losses = [[]]
+        self.avg_losses=[]
+        self.discard = batches_lr_update//4
         self.lrs = []
         self.step_count = 0
         
@@ -145,17 +147,26 @@ class LRfinder(Callback):
     def on_train_start(self, training_obj):
         save_model_weights(os.path.join(self.temp_dir,"temp.h5"), training_obj.model)
     
+    def on_train_end(self, training_obj):
+        shutil.remove(self.temp_dir)
+    
     def on_step_end(self, training_obj, epoch, step, loss, time):
-
+        self.losses[-1].append(loss)
+        
         if self.step_count%self.batches_lr_update==0:
-            
+
             load_model_weights(os.path.join(self.temp_dir,"temp.h5"), training_obj.model)
             
             lr = self.learning_rates[self.step_count//self.batches_lr_update]            
             K.set_value(training_obj.optimizer.lr, lr)
-
-            self.losses.append(loss)
-            self.lrs.append(lr)
+            
+            if len(self.losses[-1])>self.discard:
+                self.avg_losses.append(sum(self.losses[-1][self.discard:])/len(self.losses[-1][self.discard:]))
+                self.lrs.append(lr)
+                print(self.avg_losses[-1])
+                
+            self.losses.append([])
+            
         self.step_count+=1
 
     def on_train_end(self, training_obj):
@@ -165,7 +176,7 @@ class LRfinder(Callback):
         shutil.rmtree(self.temp_dir)
                 
         plt.figure(figsize=(12, 6))
-        plt.plot(self.lrs, self.losses)
+        plt.plot(self.lrs, self.avg_losses)
         plt.xlabel("Learning Rate")
         plt.ylabel("Loss")
         plt.xscale('log')
@@ -178,6 +189,7 @@ class Validation(Callback):
                  test_collection=None, 
                  comparison_metric="ndcg_cut_20", 
                  path_store = "/backup/NIR/best_model_weights",
+                 interval_val = 1,
                  **kwargs):
         super(Validation, self).__init__(**kwargs)
         self.validation_collection = validation_collection
@@ -185,6 +197,8 @@ class Validation(Callback):
         self.current_best = 0
         self.comparison_metric = comparison_metric
         self.path_store = path_store
+        self.interval_val = interval_val
+        self.count = 0
         
     def evaluate(self, model_score_fn, collection):
         generator_Y = collection.generator()
@@ -195,7 +209,8 @@ class Validation(Callback):
             query_id, Y, docs_ids = _out
             s_time = time.time()
             scores = model_score_fn(Y).numpy()[:,0].tolist()
-            print("\rEvaluation {} | time {}".format(i, time.time()-s_time), end="\r")
+            if not i%50:
+                print("\rEvaluation {} | avg 50-time {}".format(i, time.time()-s_time), end="\r")
             q_scores[query_id].extend(list(zip(docs_ids,scores)))
 
         # sort the rankings
@@ -212,19 +227,26 @@ class Validation(Callback):
         if self.validation_collection is None:
             return None
         
-        metrics = self.evaluate(training_obj.model_score, self.validation_collection)
+        self.count += 1
         
-        if metrics[self.comparison_metric]>self.current_best:
-            self.current_best = metrics[self.comparison_metric]
-            save_model_weights(self.model_path, training_obj.model)
-            print("Saved current best:", self.current_best)
+        if not self.count%self.interval_val:
         
-        print("Epoch {} | recall@100 {} | map@20 {} | NDCG@20 {} | P@20 {}"\
-                                                  .format(epoch, 
-                                                   metrics["recall_100"],
-                                                   metrics["map_cut_20"],
-                                                   metrics["ndcg_cut_20"],
-                                                   metrics["P_20"]))
+            metrics = self.evaluate(training_obj.model_score, self.validation_collection)
+        
+            if metrics[self.comparison_metric]>self.current_best:
+                self.current_best = metrics[self.comparison_metric]
+                save_model_weights(self.model_path, training_obj.model)
+                print("Saved current best:", self.current_best)
+
+            print("Epoch {} | recall@100 {} | map@20 {} | NDCG@20 {} | P@20 {}"\
+                                                      .format(epoch, 
+                                                       metrics["recall_100"],
+                                                       metrics["map_cut_20"],
+                                                       metrics["ndcg_cut_20"],
+                                                       metrics["P_20"]))
+        else:
+            metrics = None
+            
         return metrics
     
     def on_train_end(self, training_obj):
@@ -275,14 +297,18 @@ class WandBValidationLogger(Validation, PrinterEpoch):
     def on_epoch_end(self, training_obj, epoch):
         avg_loss = PrinterEpoch.on_epoch_end(self, training_obj, epoch)
         metrics = Validation.on_epoch_end(self, training_obj, epoch)
-        self.wandb.log({'recall@100': metrics["recall_100"],
-                       'map@20': metrics["map_cut_20"],
-                       'ndcg@20': metrics["ndcg_cut_20"],
-                       'P@20': metrics["P_20"],
-                       'loss': avg_loss,
-                       'epoch': epoch})
+        if metrics is not None:
+            self.wandb.log({'recall@100': metrics["recall_100"],
+                           'map@20': metrics["map_cut_20"],
+                           'ndcg@20': metrics["ndcg_cut_20"],
+                           'P@20': metrics["P_20"],
+                           'loss': avg_loss,
+                           'epoch': epoch})
         
-        self.wandb.run.summary["best_"+self.comparison_metric] = self.current_best
+            self.wandb.run.summary["best_"+self.comparison_metric] = self.current_best
+        else:
+            self.wandb.log({'loss': avg_loss,
+                           'epoch': epoch})
         
     def on_step_end(self, training_obj, epoch, step, loss, time):
         PrinterEpoch.on_step_end(self, training_obj, epoch, step, loss, time)
@@ -290,13 +316,13 @@ class WandBValidationLogger(Validation, PrinterEpoch):
         
     def on_train_end(self, training_obj):
         metrics = Validation.on_train_end(self, training_obj)
-        
-        self.wandb.run.summary["test_"+self.comparison_metric] = metrics["ndcg_cut_20"]
+        if metrics is not None:
+            self.wandb.run.summary["test_"+self.comparison_metric] = metrics["ndcg_cut_20"]
         
 def step_decay(epoch, initial_lrate):
 
     drop = 0.5
-    epochs_drop = 10.0
+    epochs_drop = 3.0
     lrate = initial_lrate * math.pow(drop, math.floor((1+epoch)/epochs_drop))
     
     return lrate
