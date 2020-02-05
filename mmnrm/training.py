@@ -68,8 +68,11 @@ class BaseTraining():
 
 class PairwiseTraining(BaseTraining):
     
-    def __init__(self, loss=hinge_loss, **kwargs):
+    def __init__(self, loss=hinge_loss,  grads_callback=None, **kwargs):
         super(PairwiseTraining, self).__init__(loss=loss, **kwargs)
+        self.grads_callback = grads_callback 
+    
+    
     
     @tf.function # check if this can reutilize the computational graph for the prediction phase
     def model_score(self, inputs):
@@ -78,7 +81,7 @@ class PairwiseTraining(BaseTraining):
     
     @tf.function # build a static computational graph
     def training_step(self, pos_in, neg_in):
-
+        print("training step")
         # manual optimization
         with tf.GradientTape() as tape:
             pos_score = self.model_score(pos_in)
@@ -88,8 +91,13 @@ class PairwiseTraining(BaseTraining):
 
         # using auto-diff to get the gradients
         grads = tape.gradient(loss, self.model.trainable_weights)
+        
+        if self.grads_callback is not None:
+            grads = self.grads_callback(grads)
         #tf.print(grads)
         # applying the gradients using an optimizer
+        #tf.print(self.model.trainable_weights[-1])
+        
         self.optimizer.apply_gradients(zip(grads, self.model.trainable_weights))
 
         return loss
@@ -338,14 +346,12 @@ class CrossValidationCollection(BaseCollection):
         } 
         
         return dict(data_json, **super_config) #fast dict merge
-    
-    
+        
 class TestCollection(BaseCollection):
     def __init__(self, 
-                 query_list, 
-                 goldstandard_trec_file, 
+                 query_list,
                  query_docs, 
-                 trec_script_eval_path,
+                 evaluator,
                  skipped_queries = [],
                  **kwargs):
         """
@@ -357,8 +363,6 @@ class TestCollection(BaseCollection):
                          },
                          ...
                      ]
-        
-        goldstandard_trec_file - name of the file with trec goldstandard:
                        
         query_docs  - dictionary with documents to be ranked by the model
                        {
@@ -369,25 +373,25 @@ class TestCollection(BaseCollection):
                            ...
                        }
                        
-        trec_script_eval_path - path to the TREC evaluation script
         """
         super(TestCollection, self).__init__(**kwargs)
         self.query_list = query_list 
-        self.goldstandard_trec_file = goldstandard_trec_file 
         self.query_docs = query_docs
-        self.trec_script_eval_path = trec_script_eval_path
+        self.evaluator = evaluator
+        
         self.skipped_queries = skipped_queries
         
-    
+        if isinstance(self.evaluator, dict):
+            self.evaluator = self.evaluator["class"].load(**self.evaluator)
+
     def get_config(self):
         super_config = super().get_config()
         
         data_json = {
             "query_list": self.query_list,
-            "goldstandard_trec_file": self.goldstandard_trec_file,
             "query_docs": self.query_docs,
-            "trec_script_eval_path": self.trec_script_eval_path,
-            "skipped_queries": self.skipped_queries
+            "skipped_queries": self.skipped_queries,
+            "evaluator": self.evaluator.get_config()
         } 
         
         return dict(data_json, **super_config) #fast dict merge
@@ -403,9 +407,6 @@ class TestCollection(BaseCollection):
                 
                 yield query_data["id"], query_data["query"], docs
     
-    def __metrics_to_dict(self, metrics):
-        return dict(map(lambda k:(k[0], float(k[1])), map(lambda x: tuple(map(lambda y: y.strip(), x.split("\tall"))), metrics.split("\n")[1:-1])))
-    
     def evaluate_pre_rerank(self, output_metris=["recall_100", "map_cut_20", "ndcg_cut_20", "P_20"]):
         """
         Compute evaluation metrics over the documents order before been ranked
@@ -420,37 +421,9 @@ class TestCollection(BaseCollection):
             return metrics
     
     def evaluate(self, ranked_query_docs):
-        metrics = None
-        temp_dir = tempfile.mkdtemp()
-        
-        try:
-            with open(os.path.join(temp_dir, "qret.txt"), "w") as f:
-                for i, rank_data in enumerate(ranked_query_docs.items()):
-                    for j,doc in enumerate(rank_data[1]):
-                        _str = "{} Q0 {} {} {} run\n".format(rank_data[0],
-                                                           doc[0],
-                                                           j+1,
-                                                           doc[1])
-                        f.write(_str)
-                        
-            # evaluate
-            trec_eval_res = subprocess.Popen(
-                [self.trec_script_eval_path, '-m', 'all_trec', self.goldstandard_trec_file, os.path.join(temp_dir, "qret.txt")],
-                stdout=subprocess.PIPE, shell=False)
-
-            (out, err) = trec_eval_res.communicate()
-            trec_eval_res = out.decode("utf-8")
-            
-            metrics = self.__metrics_to_dict(trec_eval_res)
-
-        except Exception as e:
-            raise e # maybe handle the exception in the future
-        finally:
-            # always remove the temp directory
-            print("Remove {}".format(temp_dir))
-            shutil.rmtree(temp_dir)
-            
-        return metrics
+        return self.evaluator.evaluate(ranked_query_docs)
+    
+    
 
 class TrainCollection(BaseCollection):
     def __init__(self, 
@@ -473,8 +446,10 @@ class TrainCollection(BaseCollection):
         goldstandard - must be a dictionary with the following format:
                        {
                            id: {
-                               pos_docs: [<str:id>, <str:id>, ...],
-                               neg_docs: [<str:id>, <str:id>, ...] (optional, if ommited negative sampling will be performed)
+                               0: [<str:id>, <str:id>, ...],
+                               1: [<str:id>, <str:id>, ...],
+                               2: ...,
+                               ...
                            },
                            ...
                        }
@@ -506,7 +481,7 @@ class TrainCollection(BaseCollection):
             self.collection = None
         
         self.skipped_queries = []
-        
+
         self.__build(query_docs_subset)
     
     def __find_relevance_group(self, doc_id, search_gs):
@@ -531,6 +506,13 @@ class TrainCollection(BaseCollection):
                 self.skipped_queries.append(_id)
                 continue
             
+            # do not use queries without true positives
+            # this add an overhead that can be avoided by refactor the follwing for loop!
+            unique_relevants = set(sum([self.goldstandard[_id][k] for k in self.goldstandard[_id].keys() if k>0], []))
+            if all([ doc["id"] not in unique_relevants for doc in relevance ]):
+                self.skipped_queries.append(_id)
+                continue
+            
             self.sub_set_goldstandard[_id] = defaultdict(list)
             
             for doc in relevance:
@@ -548,10 +530,17 @@ class TrainCollection(BaseCollection):
                 self.collection[doc["id"]] = doc["text"]
         
         # remove the skipped queries from the data
+        index_to_remove = []
+        
         for skipped in self.skipped_queries:
             _index = index_from_list(self.query_list, lambda x: x["id"]==skipped)
             if _index>-1:
-                del self.query_list[_index]
+                index_to_remove.append(_index)
+        index_to_remove.sort(key=lambda x:-x)
+        
+        # start removing from the tail
+        for _index in index_to_remove:
+            del self.query_list[_index]
         
         # stats
         if self.verbose:
@@ -563,6 +552,7 @@ class TrainCollection(BaseCollection):
                 print("Mean number of relevance type({}) in the queries of the goldstandard sub set: {}".format(k, sum(map(lambda x: len(x[k]), self.sub_set_goldstandard.values()))/len(self.sub_set_goldstandard)))
             
             print("Sub Collection size", len(self.collection))
+            print("Number of skipped question, due to lack of true positives", len(self.skipped_queries))
     
     def __get_goldstandard(self):
         

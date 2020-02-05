@@ -16,7 +16,7 @@ def build_PACRR(max_q_length,
                 max_ngram = 3,
                 k_max = 2,
                 activation="relu",
-                out_put_dim = 7,
+                out_put_dim = 1,
                 shuffle_query_terms = False, 
                 k_polling_avg = None, # do k_polling avg after convolution
                 polling_avg = False, # do avg polling after convolution
@@ -147,6 +147,8 @@ def semantic_exact_PACRR(semantic_pacrr,
     """
     type_combination - 0: use MLP
                        1: use WeightedCombination + MLP
+
+                       
     """
     
     max_q_length = semantic_pacrr.input[0].shape[1]

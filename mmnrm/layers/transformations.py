@@ -107,3 +107,24 @@ class ShuffleRows(tf.keras.layers.Layer):
         return None
         #return tf.gather_nd(mask, x[1], batch_dims=1)
     
+class ReplaceValuesByThreashold(tf.keras.layers.Layer):
+    """
+    Replace the values of a tensor given a condition, i.e. a boolean tensor with the same shape of the tensor
+    """
+    def __init__(self, threshold, replace_value=0, **kwargs):
+        super(ReplaceValuesByThreashold, self).__init__(**kwargs)
+        self.threshold = threshold
+        self.replace_value = replace_value
+        
+    def call(self, x):
+        
+        filter_mask = tf.cast(x<self.threshold, dtype = tf.int32) 
+        
+        # ensure performance
+        if self.replace_value!=0:
+            return tensor*filter_mask + self.replace_value*(1-filter_mask)
+        else:
+            return tensor*filter_mask
+        
+    
+    
