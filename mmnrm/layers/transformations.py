@@ -111,10 +111,11 @@ class ReplaceValuesByThreashold(tf.keras.layers.Layer):
     """
     Replace the values of a tensor given a condition, i.e. a boolean tensor with the same shape of the tensor
     """
-    def __init__(self, threshold, replace_value=0, **kwargs):
+    def __init__(self, threshold, replace_value=0, return_filter_mask=False, **kwargs):
         super(ReplaceValuesByThreashold, self).__init__(**kwargs)
         self.threshold = threshold
         self.replace_value = replace_value
+        self.return_filter_mask = return_filter_mask
         
     def call(self, x):
         
@@ -122,9 +123,68 @@ class ReplaceValuesByThreashold(tf.keras.layers.Layer):
         
         # ensure performance
         if self.replace_value!=0:
-            return tensor*filter_mask + self.replace_value*(1-filter_mask)
+            x = x*filter_mask + self.replace_value*(1-filter_mask)
         else:
-            return tensor*filter_mask
+            x = x*filter_mask
+            
+        if self.return_filter_mask:
+            return x, filter_mask
+        else:
+            return x
         
+class ReplaceValuesByMask(tf.keras.layers.Layer):
+    """
+    Replace the values of a tensor given a mask
+    """
+    def __init__(self, replace_value=0, **kwargs):
+        super(ReplaceValuesByMask, self).__init__(**kwargs)
+        self.replace_value = replace_value
+
+    def call(self, x):
+        
+        filter_mask = K.cast(x[1], dtype=x[0].dtype)
+        x = x[0]
+        
+        # ensure performance
+        if self.replace_value!=0:
+            x = x*filter_mask + self.replace_value*(1-filter_mask)
+        else:
+            x = x*filter_mask
+
+        return x    
+
+class GlobalKmaxAvgPooling2D(tf.keras.layers.Layer):
+    """
+    Aplies k-max avg pooling to a 4D tensor
+    """
+    def __init__(self, kmax=5, **kwargs):
+        super(GlobalKmaxAvgPooling2D, self).__init__(**kwargs)
+        self.kmax = kmax
+
+    def build(self, input_shape):
+        self.filter_dim = input_shape[-1]
+        super(GlobalKmaxAvgPooling2D, self).build(input_shape) 
     
+    def call(self, x):
+
+        x = tf.reshape(x, (K.shape(x)[0],-1,self.filter_dim))
+        x = tf.linalg.matrix_transpose(x)
+        x_kmax, _ = tf.math.top_k(x, k=self.kmax, sorted=False)
+
+        return K.mean(x_kmax, axis=-1)
     
+class GlobalMaskedAvgPooling2D(tf.keras.layers.Layer):
+    """
+    Aplies avg pooling to a 4D tensor using a mask
+    """
+
+    def call(self, x, mask=None):
+        assert(mask is not None)
+        mask = K.expand_dims(K.cast(mask, dtype=self.dtype))
+        x = x * mask
+        mask_elements = tf.math.reduce_sum(mask, axis=[1,2])
+        sum_x = tf.math.reduce_sum(x, axis=[1,2])
+        return sum_x/mask_elements
+    
+    def compute_mask(self, x, mask=None):
+        return None

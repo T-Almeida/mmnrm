@@ -192,7 +192,7 @@ class Validation(Callback):
                  validation_collection=None, 
                  test_collection=None, 
                  output_metrics=["recall_100", "map_cut_20","ndcg_cut_20","P_20"],
-                 path_store = "/backup/NIR/best_model_weights",
+                 path_store = "/backup/NIR_BioASQ/best_validation_models",
                  interval_val = 1,
                  **kwargs):
         super(Validation, self).__init__(**kwargs)
@@ -203,7 +203,7 @@ class Validation(Callback):
         self.path_store = path_store
         self.interval_val = interval_val
         self.count = 0
-        
+    
     def evaluate(self, model_score_fn, collection):
         generator_Y = collection.generator()
                 
@@ -225,7 +225,13 @@ class Validation(Callback):
         return collection.evaluate(q_scores)
     
     def on_epoch_start(self, training_obj, epoch):
-        self.model_path = os.path.join(self.path_store, training_obj.model.name+".h5")
+        if hasattr(self, "model_name"):
+            name = self.model_name
+        else:
+            name = training_obj.model.name 
+            
+        print("name", name)
+        self.model_path = os.path.join(self.path_store, name+".h5")
     
     def on_epoch_end(self, training_obj, epoch):
         if self.validation_collection is None:
@@ -289,11 +295,15 @@ class PrinterEpoch(Callback):
     
 class WandBValidationLogger(Validation, PrinterEpoch):
     def __init__(self, wandb_args, **kwargs):
-        Validation.__init__(self, **kwargs)
-        PrinterEpoch.__init__(self, **kwargs)
         self.wandb = wandb
         self.wandb.init(**wandb_args)
-    
+        self.wandb.run.save()
+        self.model_name = self.wandb.run.name
+        
+        Validation.__init__(self, **kwargs)
+        PrinterEpoch.__init__(self, **kwargs)
+        
+        
     def on_epoch_start(self, training_obj, epoch):
         PrinterEpoch.on_epoch_start(self, training_obj, epoch)
         Validation.on_epoch_start(self, training_obj, epoch)

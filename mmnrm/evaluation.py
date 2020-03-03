@@ -127,6 +127,22 @@ class BioASQ_Evaluator(Evaluator):
         
         return metrics
 
+    def evaluate_oracle(self):
+        metrics = {}
+        gs = self._prepere_goldstandard()
+        
+        prediction = []
+        expectation = []
+        
+        for rank_data in gs.values(): 
+            prediction.append(rank_data)
+            expectation.append(rank_data)
+            
+        metrics["map@10 bioASQ"] = f_map(prediction, expectation, bioASQ=True)
+        metrics["map@10"] = f_map(prediction, expectation)
+        metrics["recall@10"] = f_recall(prediction, expectation, at=10)
+        
+        return metrics
     
 class TREC_Robust04_Evaluator(Evaluator):
     def __init__(self,

@@ -110,3 +110,6 @@ class MaskedSoftmax(tf.keras.layers.Layer):
     
     def compute_mask(self, x, mask=None):
         return K.not_equal(x, self.mask_value)
+
+    
+    

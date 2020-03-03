@@ -20,7 +20,7 @@ import numpy as np
 import pickle
 
 import wandb
-
+import nltk
 
 def hinge_loss(positive_score, negative_score):
     return K.mean(K.maximum(0., 1. - positive_score + negative_score))
@@ -72,8 +72,6 @@ class PairwiseTraining(BaseTraining):
         super(PairwiseTraining, self).__init__(loss=loss, **kwargs)
         self.grads_callback = grads_callback 
     
-    
-    
     @tf.function # check if this can reutilize the computational graph for the prediction phase
     def model_score(self, inputs):
         print("\r[DEBUG] CALL MODEL_SCORE FUNCTION")
@@ -92,6 +90,7 @@ class PairwiseTraining(BaseTraining):
         # using auto-diff to get the gradients
         grads = tape.gradient(loss, self.model.trainable_weights)
         
+        #normalize grads???????????????????????????
         if self.grads_callback is not None:
             grads = self.grads_callback(grads)
         #tf.print(grads)
@@ -420,6 +419,14 @@ class TestCollection(BaseCollection):
         else:
             return metrics
     
+    def evaluate_oracle(self, output_metris=["recall_100", "map_cut_20", "ndcg_cut_20", "P_20"]):
+        metrics = self.evaluator.evaluate_oracle()
+    
+        if isinstance(output_metris, list):
+            return [ (m, metrics[m]) for m in output_metris]
+        else:
+            return metrics
+
     def evaluate(self, ranked_query_docs):
         return self.evaluator.evaluate(ranked_query_docs)
     
@@ -645,8 +652,11 @@ def sentence_splitter_builder(tokenizer, mode=0, max_sentence_size=21):
     
     mode 0: use fixed sized window for the split
     mode 1: split around a query-document match with a fixed size
+    mode 2: deeprank alike. Similar to mode 1, but group the match by q-term
+    mode 3: split with ntlk sentence splitter
+    mode 4: similar to 2, but uses sentence splitting instead of fix size
     """
-    if mode==1:
+    if mode in [1, 2]:
         half_window = max_sentence_size//2
         min_w = lambda x: max(0,x-half_window)
         max_w = lambda x,l: min(x+half_window,l)+1
@@ -657,20 +667,24 @@ def sentence_splitter_builder(tokenizer, mode=0, max_sentence_size=21):
         
             # get the batch triplet
             query, pos_docs, neg_docs = next(data_generator)
+            
             # tokenization
             query = tokenizer.texts_to_sequences(query)
-            pos_docs = tokenizer.texts_to_sequences(pos_docs)
-            neg_docs = tokenizer.texts_to_sequences(neg_docs)
-
-            if any([ len(doc)==0 for doc in pos_docs]):
-                continue # try a new resampling, NOTE THIS IS A EASY FIX PLS REDO THIS!!!!!!!
-                         # for obvious reasons
             
+            if mode not in [3, 4]: # for the mode 3 this is a preprocessing step
+                pos_docs = tokenizer.texts_to_sequences(pos_docs)
+                neg_docs = tokenizer.texts_to_sequences(neg_docs)
+
+                if any([ len(doc)==0 for doc in pos_docs]):
+                    continue # try a new resampling, NOTE THIS IS A EASY FIX PLS REDO THIS!!!!!!!
+                             # for obvious reasons
+
             new_pos_docs = []
             new_neg_docs = []
             
             # sentence splitting
             if mode==0:
+                
                 for i in range(len(pos_docs)):
                     new_pos_docs.append([])
                     new_neg_docs.append([])
@@ -694,7 +708,69 @@ def sentence_splitter_builder(tokenizer, mode=0, max_sentence_size=21):
                         for i,t_nd in enumerate(neg_docs[b]):
                             if t_nd==t_q:
                                 new_neg_docs[-1].append(neg_docs[b][min_w(i):max_w(i,len(neg_docs[b]))])
+            elif mode==2:
+                
+                for b in range(len(pos_docs)):
+                    new_pos_docs.append([])
+                    new_neg_docs.append([])
+                    # split by exact matching
+                    for t_q in query[b]:
+                        # entry for the query-term
+                        new_pos_docs[-1].append([])
+                        new_neg_docs[-1].append([])
+                        
+                        # exact math for the pos_document
+                        for i,t_pd in enumerate(pos_docs[b]):
+                            if t_pd==t_q:
+                                new_pos_docs[-1][-1].append(pos_docs[b][min_w(i):max_w(i,len(pos_docs[b]))])
 
+                        # exact math for the neg_document
+                        for i,t_nd in enumerate(neg_docs[b]):
+                            if t_nd==t_q:
+                                new_neg_docs[-1][-1].append(neg_docs[b][min_w(i):max_w(i,len(neg_docs[b]))])
+            elif mode==3:
+                
+                for b in range(len(pos_docs)):
+                    new_pos_docs.append([])
+                    new_neg_docs.append([])
+                    
+                    for pos_sentence in nltk.sent_tokenize(pos_docs[b]):
+                        new_pos_docs[-1].append(pos_sentence)
+                    for neg_sentence in nltk.sent_tokenize(neg_docs[b]):
+                        new_neg_docs[-1].append(neg_sentence)
+                    
+                    new_pos_docs[-1] = tokenizer.texts_to_sequences(new_pos_docs[-1])
+                    new_neg_docs[-1] = tokenizer.texts_to_sequences(new_neg_docs[-1])
+            elif mode==4:
+                
+                for b in range(len(pos_docs)):
+                    new_pos_docs.append([])
+                    new_neg_docs.append([])
+                    
+                    _temp_pos_docs = nltk.sent_tokenize(pos_docs[b])
+                    _temp_pos_docs = tokenizer.texts_to_sequences(_temp_pos_docs)
+                    
+                    _temp_neg_docs = nltk.sent_tokenize(neg_docs[b])
+                    _temp_neg_docs = tokenizer.texts_to_sequences(_temp_neg_docs)
+                    
+                    # split by exact matching
+                    for t_q in query[b]:
+                        # entry for the query-term
+                        new_pos_docs[-1].append([])
+                        new_neg_docs[-1].append([])
+                        
+                        for pos_sent in _temp_pos_docs:
+                            # exact math for the pos_document
+                            for i,t_pd in enumerate(pos_sent):
+                                if t_pd==t_q:
+                                    new_pos_docs[-1][-1].append(pos_sent)
+                                    break
+
+                        for neg_sent in _temp_neg_docs:
+                            for i,t_nd in enumerate(neg_sent):
+                                if t_nd==t_q:
+                                    new_neg_docs[-1][-1].append(neg_sent)
+                                    break
             else:
                 raise NotImplementedError("Missing implmentation for mode "+str(mode))
 
@@ -710,7 +786,9 @@ def sentence_splitter_builder(tokenizer, mode=0, max_sentence_size=21):
             for doc in docs:
                 if isinstance(doc["text"], list):
                     continue # cached tokenization
-                doc["text"] = tokenizer.texts_to_sequences([doc["text"]])[0]
+                    
+                if mode not in [3, 4]:
+                    doc["text"] = tokenizer.texts_to_sequences([doc["text"]])[0]
 
                 # sentence splitting
                 new_docs = []
@@ -722,6 +800,25 @@ def sentence_splitter_builder(tokenizer, mode=0, max_sentence_size=21):
                         for i,t_d in enumerate(doc["text"]):
                             if t_d==t_q:
                                 new_docs.append(doc["text"][min_w(i):max_w(i,len(doc["text"]))])
+                elif mode==2:
+                    for t_q in tokenized_query:
+                        new_docs.append([])
+                        for i,t_d in enumerate(doc["text"]):
+                            if t_d==t_q:
+                                new_docs[-1].append(doc["text"][min_w(i):max_w(i,len(doc["text"]))])
+                elif mode==3:
+                    for s in nltk.sent_tokenize(doc["text"]):
+                        new_docs.append(s)
+                    new_docs = tokenizer.texts_to_sequences(new_docs)
+                elif mode==4:
+                    _temp_new_docs = tokenizer.texts_to_sequences(nltk.sent_tokenize(doc["text"]))
+                    for t_q in tokenized_query:
+                        new_docs.append([])
+                        for _new_doc in _temp_new_docs:
+                            for i,t_d in enumerate(_new_doc):
+                                if t_d==t_q:
+                                    new_docs[-1].append(_new_doc)
+                                    break
                 else:
                     raise NotImplementedError("Missing implmentation for mode "+str(mode))
                                                                     

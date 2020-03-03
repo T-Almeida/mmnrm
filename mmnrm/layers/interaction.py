@@ -104,7 +104,7 @@ class ExactInteractions(MatrixInteractionMasking):
 class SemanticBaseInteraction(MatrixInteractionMasking):
     """Abstract class should not be initialized"""
     def __init__(self, 
-                 learn_term_weights=True,
+                 learn_term_weights=False,
                  initializer='glorot_uniform',
                  regularizer=None,
                  return_embeddings = False,
@@ -206,10 +206,13 @@ class SemanticInteractions(SemanticBaseInteraction):
         interaction_matrix = self._forward_interaction_matrix(query_embeddings, sentence_embeddings, mask)
         
         if self.return_embeddings:
-            return interaction_matrix, query_embeddings, sentence_embeddings
+            return [interaction_matrix, query_embeddings, sentence_embeddings]
         else:
             return interaction_matrix
 
+
+        
+        
 class ContextedSemanticInteractions(SemanticBaseInteraction):
     
     def __init__(self, 
