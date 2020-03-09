@@ -447,6 +447,7 @@ def deep_rank(max_q_length,
     aggregation_mode: 0 - use Bidirectional GRU
                       1 - use Bidirectional GRU + sig for sentence score follow another Bidirectional GRU for aggregation
                       2 - use Bidirectional GRU + sig for sentence score
+                      3 - compute score independently + sig for sentence score
     
     extraction_mode: 0 - use CNN + GlobalMaxPool
                      1 - use CNN + [GlobalMaxPool, GlobalAvgPool]
@@ -531,6 +532,15 @@ def deep_rank(max_q_length,
             x = l2_a(x)
             x = l3_a(x)
             return x
+    elif aggregation_mode==3:
+        l1_a = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(1, activation="sigmoid"))
+        l2_a = tf.keras.layers.Lambda(lambda y: tf.squeeze(y, axis=-1))
+        
+        def aggregation_senteces(x):
+            x = l1_a(x)
+            x = l2_a(x)
+            return x
+        
     else:
         raise RuntimeError("invalid aggregation_mode")
         
@@ -560,7 +570,7 @@ def deep_rank(max_q_length,
     # score
     score = output_score(doc_vector)
     
-    return tf.keras.models.Model(inputs=[input_query, input_doc, input_query_idf], outputs=score)
+    return tf.keras.models.Model(inputs=[input_query, input_doc, input_query_idf], outputs=score), output_i_stack
         
 
 

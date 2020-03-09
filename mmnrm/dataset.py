@@ -11,6 +11,7 @@ import random
 import numpy as np
 import pickle
 import nltk
+from nltk.tokenize.punkt import PunktSentenceTokenizer
 import math
 
 from mmnrm.training import BaseCollection
@@ -346,13 +347,16 @@ def compute_extra_features(query_tokens, tokenized_sentences_doc, idf_fn):
     
     
     
-def sentence_splitter_builderV2(tokenizer, mode=4, max_sentence_size=21):
+def sentence_splitter_builderV2(tokenizer, mode=4, max_sentence_size=21, queries_sw=None, docs_sw=None):
     """
     Return a transform_inputs_fn for training and test as a tuple
     
     For now only the mode 4 is supported since it was the best from the previous version!
     
     mode 4: similar to 2, but uses sentence splitting instead of fix size
+    
+    queries_sw: set with sw for queries
+    docs_sw: set with sw for documents
     """
     idf_from_id_token = lambda x: math.log(tokenizer.document_count/tokenizer.word_docs[tokenizer.index_word[x]])
     
@@ -365,7 +369,11 @@ def sentence_splitter_builderV2(tokenizer, mode=4, max_sentence_size=21):
             
             # tokenization
             query = tokenizer.texts_to_sequences(query)
-
+            
+            if queries_sw is not None:
+                for tokenized_query in query:
+                    tokenized_query = [token for token in tokenized_query if token not in queries_sw] 
+            
             new_pos_docs = []
             new_neg_docs = []
             
@@ -382,20 +390,28 @@ def sentence_splitter_builderV2(tokenizer, mode=4, max_sentence_size=21):
                     _temp_pos_docs = nltk.sent_tokenize(pos_docs[b]["text"])
                     _temp_pos_docs = tokenizer.texts_to_sequences(_temp_pos_docs)
                     
+                    if docs_sw is not None:
+                        for tokenized_docs in _temp_pos_docs:
+                            tokenized_docs = [token for token in tokenized_docs if token not in docs_sw] 
+                    
                     _temp_neg_docs = nltk.sent_tokenize(neg_docs[b]["text"])
                     _temp_neg_docs = tokenizer.texts_to_sequences(_temp_neg_docs)
                     
+                    if docs_sw is not None:
+                        for tokenized_docs in _temp_neg_docs:
+                            tokenized_docs = [token for token in tokenized_docs if token not in docs_sw] 
+                    
                     # compute extra features
-                    extra_features_pos_doc = compute_extra_features(query[b], _temp_pos_docs, idf_from_id_token)
-                    extra_features_neg_doc = compute_extra_features(query[b], _temp_neg_docs, idf_from_id_token)
+                    #extra_features_pos_doc = compute_extra_features(query[b], _temp_pos_docs, idf_from_id_token)
+                    #extra_features_neg_doc = compute_extra_features(query[b], _temp_neg_docs, idf_from_id_token)
                     
                     # add the bm25 score
-                    extra_features_pos_doc.append(pos_docs[b]["score"])
-                    extra_features_neg_doc.append(neg_docs[b]["score"])
+                    #extra_features_pos_doc.append(pos_docs[b]["score"])
+                    #extra_features_neg_doc.append(neg_docs[b]["score"])
                     
                     # add all the extra features
-                    new_pos_extra_features.append(extra_features_pos_doc)
-                    new_neg_extra_features.append(extra_features_neg_doc)
+                    #new_pos_extra_features.append(extra_features_pos_doc)
+                    #new_neg_extra_features.append(extra_features_neg_doc)
                     
                     # split by exact matching
                     for t_q in query[b]:
@@ -427,6 +443,10 @@ def sentence_splitter_builderV2(tokenizer, mode=4, max_sentence_size=21):
 
             # tokenization
             tokenized_query = tokenizer.texts_to_sequences([query])[0]
+            
+            if queries_sw is not None:
+                tokenized_query = [token for token in tokenized_query if token not in queries_sw] 
+            
             for doc in docs:
                 if isinstance(doc["text"], list):
                     continue # cached tokenization
@@ -434,16 +454,31 @@ def sentence_splitter_builderV2(tokenizer, mode=4, max_sentence_size=21):
                 # sentence splitting
                 new_docs = []
                 if mode==4:
-                    _temp_new_docs = tokenizer.texts_to_sequences(nltk.sent_tokenize(doc["text"]))
+                    _temp_new_docs = []
+                    doc["offset"] = []
+                    for start, end in PunktSentenceTokenizer().span_tokenize(doc["text"]):
+                        _temp_new_docs.append(doc["text"][start:end])
+                        
+                        if start<(len(doc["title"])-1):
+                            doc["offset"].append(["title",(start, end), doc["text"][start:end], []])
+                        else:
+                            doc["offset"].append(["abstract", (start-len(doc["title"]), end-len(doc["title"])), doc["text"][start:end], []])
+                        
+                    _temp_new_docs = tokenizer.texts_to_sequences(_temp_new_docs)
                     
-                    doc["extra_features"] = compute_extra_features(tokenized_query, _temp_new_docs, idf_from_id_token)+[doc["score"]]
+                    if docs_sw is not None:
+                        for tokenized_docs in _temp_new_docs:
+                            tokenized_docs = [token for token in tokenized_docs if token not in docs_sw]
                     
-                    for t_q in tokenized_query:
+                    #doc["extra_features"] = compute_extra_features(tokenized_query, _temp_new_docs, idf_from_id_token)+[doc["score"]]
+                    
+                    for k,t_q in enumerate(tokenized_query):
                         new_docs.append([])
-                        for _new_doc in _temp_new_docs:
+                        for l,_new_doc in enumerate(_temp_new_docs):
                             for i,t_d in enumerate(_new_doc):
                                 if t_d==t_q:
                                     new_docs[-1].append(_new_doc)
+                                    doc["offset"][l][-1].append(k)
                                     break
                 else:
                     raise NotImplementedError("Missing implmentation for mode "+str(mode))

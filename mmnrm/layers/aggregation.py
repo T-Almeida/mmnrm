@@ -125,6 +125,7 @@ class TermAggregation(TrainableLayer):
     def __init__(self, aggregate=True, **kwargs):
         super(TermAggregation, self).__init__(**kwargs)
         self.aggregate = aggregate
+        self.distribution_tensor = None
         
     def build(self, input_shape):
         
@@ -143,7 +144,8 @@ class TermAggregation(TrainableLayer):
         """
 
         q_weights = K.squeeze(K.dot(x[1], self.w_q_embeddings), axis=-1) # [None, q, 1]
-        q_distribution = K.expand_dims(K.softmax(q_weights))
+        self.distribution_tensor = K.softmax(q_weights)
+        q_distribution = K.expand_dims(self.distribution_tensor)
         
         if self.aggregate:
             return K.sum(x[0] * q_distribution, axis=1)
