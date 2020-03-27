@@ -188,3 +188,29 @@ class GlobalMaskedAvgPooling2D(tf.keras.layers.Layer):
     
     def compute_mask(self, x, mask=None):
         return None
+    
+class GlobalKmax2D(tf.keras.layers.Layer):
+    """
+    Aplies kmax pooling to a 4D tensor
+    """
+    
+    def __init__(self, kmax=3, **kwargs):
+        super(GlobalKmax2D, self).__init__(**kwargs)
+        self.kmax = kmax
+
+    def build(self, input_shape):
+        self.filter_dim = input_shape[-1]
+        super(GlobalKmax2D, self).build(input_shape) 
+    
+    def call(self, x): #B, Q, D, F
+        batch_size = K.shape(x)[0]
+        
+        x = tf.reshape(x, (batch_size,-1,self.filter_dim)) # B, QxD, F
+        x = tf.linalg.matrix_transpose(x) # B, F, QxD
+        x, _ = tf.math.top_k(x, k=self.kmax, sorted=False) # B, F, MAX
+
+        return tf.reshape(x, (batch_size,self.kmax*self.filter_dim)) # B, F x MAX
+    
+    def compute_mask(self, x, mask=None):
+        return None
+ 

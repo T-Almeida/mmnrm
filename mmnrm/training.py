@@ -22,10 +22,10 @@ import pickle
 import wandb
 import nltk
 
-def hinge_loss(positive_score, negative_score):
+def hinge_loss(positive_score, negative_score, *args):
     return K.mean(K.maximum(0., 1. - positive_score + negative_score))
 
-def pairwise_cross_entropy(positive_score, negative_score):
+def pairwise_cross_entropy(positive_score, negative_score, *args):
     positive_exp = K.exp(positive_score)
     return K.mean(-K.log(positive_exp/(positive_exp+K.exp(negative_score))))
     
@@ -68,9 +68,18 @@ class BaseTraining():
 
 class PairwiseTraining(BaseTraining):
     
-    def __init__(self, loss=hinge_loss,  grads_callback=None, **kwargs):
+    def __init__(self, loss=hinge_loss,  grads_callback=None, transform_model_inputs_callback=None, **kwargs):
         super(PairwiseTraining, self).__init__(loss=loss, **kwargs)
         self.grads_callback = grads_callback 
+        self.transform_model_inputs_callback = transform_model_inputs_callback
+    
+    def predict_score(self, inputs):
+        output = self.model.predict(inputs)
+        
+        if isinstance(self.model.output,list):
+            return output[0]
+        else:
+            return output
     
     @tf.function # check if this can reutilize the computational graph for the prediction phase
     def model_score(self, inputs):
@@ -80,12 +89,16 @@ class PairwiseTraining(BaseTraining):
     @tf.function # build a static computational graph
     def training_step(self, pos_in, neg_in):
         print("training step")
+        
+        if self.transform_model_inputs_callback is not None:
+            pos_in, neg_in, pos_label, neg_label = self.transform_model_inputs_callback(pos_in, neg_in)
+        
         # manual optimization
         with tf.GradientTape() as tape:
             pos_score = self.model_score(pos_in)
             neg_score = self.model_score(neg_in)
 
-            loss = self.loss(pos_score, neg_score)
+            loss = self.loss(pos_score, neg_score, pos_label, neg_label)
 
         # using auto-diff to get the gradients
         grads = tape.gradient(loss, self.model.trainable_weights)

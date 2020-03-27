@@ -453,9 +453,12 @@ def deep_rank(max_q_length,
                      1 - use CNN + [GlobalMaxPool, GlobalAvgPool]
                      2 - use CNN + [GlobalMaxPool, GlobalAvgPool, GlobalK-maxAvgPool]
                      3 - use CNN + [GlobalMaxPool, GlobalK-maxAvgPool]
+                     4 - use CNN + GlobalKmaxPool
 
     """
-
+    
+    initialized_vars = locals()
+    
     return_embeddings = q_term_weight_mode==0
     
     input_query = tf.keras.layers.Input((max_q_length,), dtype="int32") # (None, Q)
@@ -504,6 +507,23 @@ def deep_rank(max_q_length,
             x = concatenate(_concat)
             
             return x, query_embeddings
+    elif extraction_mode==4:
+        conv = tf.keras.layers.Conv2D(filters=filters, kernel_size=(3,3),padding="SAME", activation="selu")
+        kmax_pool = GlobalKmax2D()
+        
+        def extract(x):
+            if return_embeddings:
+                x_interaction, query_embeddings, _ = interactions(x)
+            else:
+                x_interaction = interactions(x)
+                query_embeddings = K.expand_dims(input_query_idf, axis=-1)
+            x = conv(x_interaction)
+            x = kmax_pool(x)
+
+            return x, query_embeddings
+        
+    else:
+        raise RuntimeError("invalid extraction_mode")
         
     if aggregation_mode==0:
         aggregation_senteces = tf.keras.layers.Bidirectional(tf.keras.layers.GRU(gru))
@@ -539,8 +559,7 @@ def deep_rank(max_q_length,
         def aggregation_senteces(x):
             x = l1_a(x)
             x = l2_a(x)
-            return x
-        
+            return x    
     else:
         raise RuntimeError("invalid aggregation_mode")
         

@@ -36,7 +36,7 @@ def __precision(prediction, expectation):
     return sum([ 1 if pmid in expectation else 0 for pmid in prediction])/len(prediction)
 
 
-def __average_precision_at(prediction, expectation, bioASQ, use_len=False, at=10):
+def __average_precision_at(prediction, expectation, bioASQ_version, use_len=False, at=10):
     """
     predictions: list of pmid, each element can be a tuple (pmid,score) or (pmid)
     expectations: list of valid pmid
@@ -48,7 +48,11 @@ def __average_precision_at(prediction, expectation, bioASQ, use_len=False, at=10
     binary_relevance = [ 1 if pmid in expectation else 0 for pmid in prediction[:at] ]
     precision_at = [ __precision(prediction[:i],expectation) for i in range(1,at+1) ]
 
-    if bioASQ:
+    if bioASQ_version==8:
+        if len(expectation)==0:
+            return 0
+        return sum([a*b for a,b in zip(precision_at,binary_relevance)])/min(len(expectation),10)
+    elif bioASQ_version==7:
         return sum([a*b for a,b in zip(precision_at,binary_relevance)])/10
     elif use_len:
         return sum([a*b for a,b in zip(precision_at,binary_relevance)])/len(expectation)
@@ -57,14 +61,17 @@ def __average_precision_at(prediction, expectation, bioASQ, use_len=False, at=10
     else: #The indetermination 0/0 will be consider 0
         return 0
 
-def f_map(predictions, expectations, at=10,bioASQ = False,use_len=False):
+def f_map(predictions, expectations, at=10,bioASQ_version = None, use_len=False ):
     """
     predictions: list of list of pmid
     expectations: list of list of pmid
+    
+    bioASQ_version: 7 - bioasq 7b
+                    8 - bioasq 8b
     """
     assert len(predictions) == len(expectations)
 
-    return sum([ __average_precision_at(predictions[j],expectations[j],bioASQ,use_len, at) for j in range(len(predictions))])/len(predictions)
+    return sum([ __average_precision_at(predictions[j],expectations[j],bioASQ_version,use_len, at) for j in range(len(predictions))])/len(predictions)
 
 
 class Evaluator():
@@ -91,16 +98,19 @@ class Evaluator():
 class BioASQ_Evaluator(Evaluator):
     def __init__(self,
                  goldstandard,
+                 bioasq_version=8,
                  **kwargs):
         super(Evaluator, self).__init__()
         self.goldstandard = goldstandard
         self.gs_cached = None
+        self.bioasq_version = bioasq_version
         
     def get_config(self):
         super_config = super().get_config()
         
         data_json = {
             "goldstandard": self.goldstandard
+            "bioasq_version": self.bioasq_version
         }
         
         return dict(data_json, **super_config) #fast dict merge
@@ -122,7 +132,7 @@ class BioASQ_Evaluator(Evaluator):
             prediction.append(list(map(lambda x:x[0], rank_data[1])))
             expectation.append(gs[rank_data[0]])
             
-        metrics["map@10"] = f_map(prediction, expectation, bioASQ=True)
+        metrics["map@10"] = f_map(prediction, expectation, bioASQ_version=self.bioasq_version)
         metrics["recall@10"] = f_recall(prediction, expectation, at=10)
         
         return metrics
@@ -138,7 +148,7 @@ class BioASQ_Evaluator(Evaluator):
             prediction.append(rank_data)
             expectation.append(rank_data)
             
-        metrics["map@10 bioASQ"] = f_map(prediction, expectation, bioASQ=True)
+        metrics["map@10 bioASQ"] = f_map(prediction, expectation, bioASQ_version=self.bioasq_version)
         metrics["map@10"] = f_map(prediction, expectation)
         metrics["recall@10"] = f_recall(prediction, expectation, at=10)
         

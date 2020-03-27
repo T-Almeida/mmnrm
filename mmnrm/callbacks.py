@@ -1,7 +1,7 @@
 import tensorflow as tf
 from tensorflow.keras import backend as K
 
-from mmnrm.utils import save_model_weights, load_model_weights, set_random_seed
+from mmnrm.utils import save_model_weights, load_model_weights, set_random_seed, save_model
 
 import numpy as np
 
@@ -198,8 +198,8 @@ class Validation(Callback):
         super(Validation, self).__init__(**kwargs)
         self.validation_collection = validation_collection
         self.test_collection = test_collection
-        self.current_best = 0
-        self.current_best_recall = 0
+        self.current_best = [ 0 for _ in range(len(validation_collection))]
+        self.current_best_recall = [ 0 for _ in range(len(validation_collection))]
         self.output_metrics = output_metrics
         self.path_store = path_store
         self.interval_val = interval_val
@@ -213,7 +213,7 @@ class Validation(Callback):
         for i, _out in enumerate(generator_Y):
             query_id, Y, docs_ids = _out
             s_time = time.time()
-            scores = model_score_fn(Y).numpy()[:,0].tolist()
+            scores = model_score_fn(Y)[:,0].tolist()
             if not i%50:
                 print("\rEvaluation {} | avg 50-time {}".format(i, time.time()-s_time), end="\r")
             q_scores[query_id].extend(list(zip(docs_ids,scores)))
@@ -231,8 +231,8 @@ class Validation(Callback):
         else:
             name = training_obj.model.name 
             
-        name += "_{}"
-        self.model_path = os.path.join(self.path_store, name+".h5")
+        name += "_batch{}_{}"
+        self.model_path = os.path.join(self.path_store, name)
     
     def on_epoch_end(self, training_obj, epoch):
         if self.validation_collection is None:
@@ -241,23 +241,29 @@ class Validation(Callback):
         self.count += 1
         
         if not self.count%self.interval_val:
-        
-            metrics = self.evaluate(training_obj.model_score, self.validation_collection)
-        
-            if metrics[self.output_metrics[0]]>self.current_best:
-                self.current_best = metrics[self.output_metrics[0]]
-                save_model_weights(self.model_path.format("map"), training_obj.model)
-                print("Saved current best:", self.current_best)
+            metrics = []
+            for i,val_collection in enumerate(self.validation_collection):
                 
-            if metrics[self.output_metrics[1]]>self.current_best_recall:
-                self.current_best_recall = metrics[self.output_metrics[1]]
-                save_model_weights(self.model_path.format("recall"), training_obj.model)
-                print("Saved current best:", self.current_best_recall)
+                _metrics = self.evaluate(training_obj.predict_score, val_collection)
+                
+                if _metrics[self.output_metrics[0]]>self.current_best[i]:
+                    self.current_best[i] = _metrics[self.output_metrics[0]]
+                    save_model(self.model_path.format(i,"map"), training_obj.model)
+                    #save_model_weights(self.model_path.format("map"), training_obj.model)
+                    print("Saved current best:", self.current_best[i])
 
-            _str = "" # use stringbuilder instead
-            for m in self.output_metrics:
-                _str += " | {} {}".format(m, metrics[m])
-            print("Epoch {}{}".format(epoch, _str))
+                if _metrics[self.output_metrics[1]]>self.current_best_recall[i]:
+                    self.current_best_recall[i] = _metrics[self.output_metrics[1]]
+                    save_model(self.model_path.format(i,"recall"), training_obj.model)
+                    #save_model_weights(self.model_path.format("recall"), training_obj.model)
+                    print("Saved current best:", self.current_best_recall[i])
+
+                _str = "" # use stringbuilder instead
+                for m in self.output_metrics:
+                    _str += " | {} {}".format(m, _metrics[m])
+                print("Epoch {}{}".format(epoch, _str))
+                
+                metrics.append(_metrics)
 
         else:
             metrics = None
@@ -267,13 +273,14 @@ class Validation(Callback):
     def on_train_end(self, training_obj):
         
         # save final model
-        save_model_weights(self.model_path.format("final"), training_obj.model)
+        #save_model_weights(self.model_path.format("final"), training_obj.model)
+        save_model(self.model_path.format("all", "final"), training_obj.model)
         
         if self.test_collection is None:
             return None
         
         # restore to the best
-        if self.current_best>0:
+        if self.current_best[0]>0:
             load_model_weights(self.model_path, training_obj.model)
         
         metrics = self.evaluate(training_obj.model_score, self.test_collection)
@@ -324,12 +331,16 @@ class WandBValidationLogger(Validation, PrinterEpoch):
         metrics = Validation.on_epoch_end(self, training_obj, epoch)
         if metrics is not None:
             _log = {'loss': avg_loss, 'epoch': epoch}
-            for m in self.output_metrics:
-                _log[m] = metrics[m]
+            
+            for i in range(len(metrics)):
+                for m in self.output_metrics:
+                    _log[m+"_0"+str(i)] = metrics[i][m]
+                    
+                self.wandb.run.summary["best_0"+str(i)+"_"+self.output_metrics[0]] = self.current_best[i]
               
             self.wandb.log(_log)
         
-            self.wandb.run.summary["best_"+self.output_metrics[0]] = self.current_best
+            
         else:
             self.wandb.log({'loss': avg_loss,
                            'epoch': epoch})
