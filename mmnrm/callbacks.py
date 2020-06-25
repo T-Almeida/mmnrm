@@ -198,8 +198,8 @@ class Validation(Callback):
         super(Validation, self).__init__(**kwargs)
         self.validation_collection = validation_collection
         self.test_collection = test_collection
-        self.current_best = [ 0 for _ in range(len(validation_collection))]
-        self.current_best_recall = [ 0 for _ in range(len(validation_collection))]
+        self.current_best = [[ 0 for _m in range(len(output_metrics))] for _ in range(len(validation_collection))]
+
         self.output_metrics = output_metrics
         self.path_store = path_store
         self.interval_val = interval_val
@@ -231,7 +231,7 @@ class Validation(Callback):
         else:
             name = training_obj.model.name 
             
-        name += "_batch{}_{}"
+        name += "_val_collection{}_{}"
         self.model_path = os.path.join(self.path_store, name)
     
     def on_epoch_end(self, training_obj, epoch):
@@ -246,24 +246,22 @@ class Validation(Callback):
                 
                 _metrics = self.evaluate(training_obj.predict_score, val_collection)
                 
-                if _metrics[self.output_metrics[0]]>self.current_best[i]:
-                    self.current_best[i] = _metrics[self.output_metrics[0]]
-                    save_model(self.model_path.format(i,"map"), training_obj.model)
-                    #save_model_weights(self.model_path.format("map"), training_obj.model)
-                    print("Saved current best:", self.current_best[i])
-
-                if _metrics[self.output_metrics[1]]>self.current_best_recall[i]:
-                    self.current_best_recall[i] = _metrics[self.output_metrics[1]]
-                    save_model(self.model_path.format(i,"recall"), training_obj.model)
-                    #save_model_weights(self.model_path.format("recall"), training_obj.model)
-                    print("Saved current best:", self.current_best_recall[i])
-
                 _str = "" # use stringbuilder instead
-                for m in self.output_metrics:
-                    _str += " | {} {}".format(m, _metrics[m])
+                
+                for j,_out_metric in enumerate(self.output_metrics):
+                    if _out_metric in _metrics:
+                        
+                        _str += " | {} {}".format(_out_metric, _metrics[_out_metric])
+                        
+                        if _metrics[_out_metric]>self.current_best[i][j]:
+                            self.current_best[i][j] = _metrics[_out_metric]
+                            save_model(self.model_path.format(i,_out_metric), training_obj.model)
+                            #save_model_weights(self.model_path.format("map"), training_obj.model)
+                            print("Saved current best:", self.current_best[i][j])
+
                 print("Epoch {}{}".format(epoch, _str))
                 
-                metrics.append(_metrics)
+                metrics.append((val_collection.name, _metrics))
 
         else:
             metrics = None
@@ -273,25 +271,25 @@ class Validation(Callback):
     def on_train_end(self, training_obj):
         
         # save final model
-        #save_model_weights(self.model_path.format("final"), training_obj.model)
+        # save_model_weights(self.model_path.format("final"), training_obj.model)
         save_model(self.model_path.format("all", "final"), training_obj.model)
-        
-        if self.test_collection is None:
-            return None
+        pass
+        #if self.test_collection is None:
+        #    return None
         
         # restore to the best
-        if self.current_best[0]>0:
-            load_model_weights(self.model_path, training_obj.model)
+        #if self.current_best[0]>0:
+        #    load_model_weights(self.model_path, training_obj.model)
         
-        metrics = self.evaluate(training_obj.model_score, self.test_collection)
+        #metrics = self.evaluate(training_obj.model_score, self.test_collection)
                   
-        _str = "" # use stringbuilder instead
-        for m in self.output_metrics:
-            _str += " | {} {}".format(m, metrics[m])
+        #_str = "" # use stringbuilder instead
+        #for m in self.output_metrics:
+        #    _str += " | {} {}".format(m, metrics[m])
 
-        print("\nTestSet final evaluation{}".format(epoch, _str))
+        #print("\nTestSet final evaluation{}".format(epoch, _str))
 
-        return metrics
+        #return metrics
 
 class PrinterEpoch(Callback):
     def __init__(self, steps_per_epoch=None, **kwargs):
@@ -328,15 +326,17 @@ class WandBValidationLogger(Validation, PrinterEpoch):
     
     def on_epoch_end(self, training_obj, epoch):
         avg_loss = PrinterEpoch.on_epoch_end(self, training_obj, epoch)
-        metrics = Validation.on_epoch_end(self, training_obj, epoch)
-        if metrics is not None:
+        collection_metrics = Validation.on_epoch_end(self, training_obj, epoch)
+        if collection_metrics is not None:
             _log = {'loss': avg_loss, 'epoch': epoch}
             
-            for i in range(len(metrics)):
-                for m in self.output_metrics:
-                    _log[m+"_0"+str(i)] = metrics[i][m]
+            for collection_name, metrics in collection_metrics:
+                
+                for _out_metric in self.output_metrics:
+                    if _out_metric in metrics:
+                        _log[collection_name+"_"+_out_metric] = metrics[_out_metric]
                     
-                self.wandb.run.summary["best_0"+str(i)+"_"+self.output_metrics[0]] = self.current_best[i]
+                    #self.wandb.run.summary["best_"+collection_name+"_"+m] = self.current_best[i]
               
             self.wandb.log(_log)
         
@@ -350,10 +350,12 @@ class WandBValidationLogger(Validation, PrinterEpoch):
         self.wandb.log({'loss': float(loss)})
         
     def on_train_end(self, training_obj):
-        metrics = Validation.on_train_end(self, training_obj)
-        if metrics is not None:
-            self.wandb.run.summary["test_"+self.output_metrics[0]] = metrics[self.output_metrics[0]]
-            self.wandb.run.summary["test_"+self.output_metrics[1]] = metrics[self.output_metrics[1]]
+        Validation.on_train_end(self, training_obj) # just do a save
+        
+        #metrics = Validation.on_train_end(self, training_obj)
+        #if metrics is not None:
+        #    self.wandb.run.summary["test_"+self.output_metrics[0]] = metrics[self.output_metrics[0]]
+        #    self.wandb.run.summary["test_"+self.output_metrics[1]] = metrics[self.output_metrics[1]]
         
 def step_decay(epoch, initial_lrate):
 

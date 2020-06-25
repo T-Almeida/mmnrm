@@ -261,9 +261,16 @@ class BaseCollection:
     def __init__(self, 
                  transform_inputs_fn=None, 
                  b_size=64, 
+                 name=None,
                  **kwargs):
         self.transform_inputs_fn = transform_inputs_fn
         self.b_size = b_size
+        self.name = name
+    
+    def update_query_list(self, query_list):
+        # NEED REFACTOR, class TEST and TRAIN collection that extend BaseCollection has query_list parameter, that should be moved to this class
+        self.query_list = query_list
+        return self
     
     def set_transform_inputs_fn(self, transform_inputs_fn):
         # build style method
@@ -281,6 +288,10 @@ class BaseCollection:
         } 
         
         return data_json
+    
+    def set_name(self, name):
+        self.name = name
+        return self
     
     def generator(self, **kwargs):
         # generator for the query, pos and negative docs

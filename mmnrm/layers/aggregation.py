@@ -48,9 +48,10 @@ class KmaxAggregation(tf.keras.layers.Layer):
     
 class SelfAttention(TrainableLayer):
     
-    def __init__(self, attention_dimension=None, **kwargs):
+    def __init__(self, attention_dimension=None, aggregation=True, **kwargs):
         super(SelfAttention, self).__init__(**kwargs)
         self.attention_dimension = attention_dimension
+        self.aggregation = aggregation
     
     def build(self, input_shape):
         
@@ -76,14 +77,20 @@ class SelfAttention(TrainableLayer):
         x_tanh = K.tanh(x_projection)
         x_attention = K.dot(x_tanh, self.W_attn_score) # B, Q, 1
         #print("x_attention", x_attention)
-        mask = K.expand_dims(mask)
-        #print("mask", mask)
-        x_attention_masked = x_attention + ((1.0 - K.cast(mask, dtype=self.dtype)) * -10000.0)
+        if mask is not None:
+            mask = K.expand_dims(mask)
+            #print("mask", mask)
+            x_attention = x_attention + ((1.0 - K.cast(mask, dtype=self.dtype)) * -10000.0)
         #print("x_attention_maked", x_attention_maked)
-        x_attention_softmax = K.softmax(x_attention_masked, axis = 1)
+        x_attention_softmax = K.softmax(x_attention, axis = 1)
         #print("x_attention_softmax", x_attention_softmax)
-
-        return K.sum(x_attention_softmax * x, axis = 1)
+        
+        x = x_attention_softmax * x
+        
+        if self.aggregation:
+            return K.sum(x, axis = 1)
+        else:
+            return x
     
     def compute_mask(self, inputs, mask=None):
         return None #clear the mask

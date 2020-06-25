@@ -16,6 +16,192 @@ import math
 
 from mmnrm.training import BaseCollection
 
+class TrainPairwiseCollection(BaseCollection):
+    """
+    Follows a TREC like style, were a set of integer relevance is given (0,1,2,...)
+    """
+    
+    def __init__(self, 
+                 query_list, 
+                 goldstandard,
+                 collection,
+                 query_sampling_strategy = 0,
+                 **kwargs):
+        """
+        query_list - must be a list with the following format :
+                     [
+                         {
+                             id: <str>
+                             query: <str>
+                         },
+                         ...
+                     ]
+        
+        goldstandard - must be a dictionary with the following format:
+                       {
+                           id: {
+                               0: [<str:id>, <str:id>, ...],
+                               1: [<str:id>, <str:id>, ...],
+                               2: ...,
+                               ...
+                           },
+                           ...
+                       }
+        collection - dictionary
+                    {
+                        <str:id>:<str:doc text>
+                    }
+                    
+        """
+        super(TrainPairwiseCollection, self).__init__(**kwargs)
+        self.query_list = query_list # [{query data}]
+        self.set_goldstandard(goldstandard) # {query_id:[relevance docs]}
+        self.collection = collection
+        self.set_query_sampling_strategy(query_sampling_strategy)
+
+    
+    def set_goldstandard(self, goldstandard):
+        # cache the original gs
+        self.goldstandard = goldstandard
+        
+        self.goldstandard_keys_by_relevance = {}
+        
+        for _id in goldstandard.keys():
+            
+            # do some precomputation
+            self.goldstandard_keys_by_relevance[_id] = list(self.goldstandard[_id].keys())
+            self.goldstandard_keys_by_relevance[_id].sort()
+
+            # only use the positive keys
+            # self.goldstandard_keys_by_relevance[_id] = self.goldstandard_keys_by_relevance[_id][1:]
+    
+    def set_query_sampling_strategy(self, strategy):
+        """
+        strategy: 0 - random by id
+                  1 - uniform distribution that acouts the number of positive feedback
+                  2 - uniform distribution that acouts for the total number of feedback (includes negative)
+        """
+        self.query_sampling_strategy = strategy
+        
+        if strategy==1:
+            # do some precomputation
+            self.gs_positive_total_docs = { _id:sum( [ len(self.goldstandard[_id][relevance_id]) for relevance_id in self.goldstandard_keys_by_relevance[_id][1:]]) for _id in self.goldstandard.keys()}
+            self.query_ids = [ q_data["id"] for q_data in self.query_list]
+        elif strategy==2:
+            # do some precomputation
+            self.gs_total_docs = { _id:sum( [ len(self.goldstandard[_id][relevance_id]) for relevance_id in self.goldstandard_keys_by_relevance[_id]]) for _id in self.goldstandard.keys()}
+            self.query_ids = [ q_data["id"] for q_data in self.query_list]
+        
+        return self
+    
+    def __linear_probs(self, groups, selected_gs, use_len=True, b_size=None, return_indexes=False):
+        
+        if use_len:
+            group_len = list(map(lambda x: len(selected_gs[x]), groups))
+        else:
+            group_len = list(map(lambda x: selected_gs[x], groups))
+            
+        total = sum(group_len)
+        prob = list(map(lambda x: x/total, group_len))
+        
+        if return_indexes:
+            groups = range(len(prob)) # same as range(len(groups))
+            
+        return np.random.choice(groups, p=prob, size=b_size)
+    
+    
+    def __choose_query(self):
+
+        if self.query_sampling_strategy==0:
+            return np.random.randint(0,len(self.query_list), size=self.b_size)
+        elif self.query_sampling_strategy==1:
+            return self.__linear_probs(self.query_ids, 
+                                       self.gs_positive_total_docs, 
+                                       use_len=False, 
+                                       b_size=self.b_size,
+                                       return_indexes=True)
+        elif self.query_sampling_strategy==2:
+            return self.__linear_probs(self.query_ids, 
+                                       self.gs_total_docs, 
+                                       use_len=False, 
+                                       b_size=self.b_size,
+                                       return_indexes=True)
+        else:
+            raise ValueError("query_sampling_strategy value {} is invalid".format(self.query_sampling_strategy))    
+    
+    def __choose_pos_neg_index(self, goldstandard_keys_by_relevance, selected_gs):
+        
+        goldstandard_positives = goldstandard_keys_by_relevance[1:]
+        relevance_group = self.__linear_probs(goldstandard_positives, selected_gs)
+        
+        pos_index = random.randint(0, len(selected_gs[relevance_group])-1)
+        
+        # select the random also based on probabilities TODO
+        
+        goldstandard_negatives = [ neg_group for neg_group in goldstandard_keys_by_relevance if neg_group<relevance_group]
+        less_relevance_group = self.__linear_probs(goldstandard_negatives, selected_gs) 
+        
+        neg_index = random.randint(0, len(selected_gs[less_relevance_group])-1)
+
+        assert(relevance_group>less_relevance_group)
+        
+        pos_doc_id = selected_gs[relevance_group][pos_index]
+        neg_doc_id = selected_gs[less_relevance_group][neg_index]
+        return pos_doc_id, neg_doc_id
+
+    
+    def _generate(self):
+        
+            
+        while True:
+            # TODO check if it is worthit to use numpy to vectorize these operations
+            
+            y_query = []
+            y_pos_doc = []
+            y_neg_doc = []
+            
+            # build $batch_size triples and yield
+            query_indexes = self.__choose_query()
+
+            for q_i in query_indexes:
+                selected_query = self.query_list[q_i]
+                
+                pos_doc_id, neg_doc_id = self.__choose_pos_neg_index(self.goldstandard_keys_by_relevance[selected_query["id"]],
+                                                                     self.goldstandard[selected_query["id"]])
+                
+                pos_doc = {"text":self.collection[pos_doc_id]["text"]}
+                neg_doc = {"text":self.collection[neg_doc_id]["text"]}
+                
+                y_query.append(selected_query["query"])
+                y_pos_doc.append(pos_doc)
+                y_neg_doc.append(neg_doc)
+            
+            yield (np.array(y_query), np.array(y_pos_doc), np.array(y_neg_doc))
+            
+    def get_steps(self):
+        
+        total_feedback = None # at the moment this var will be override
+        
+        if self.query_sampling_strategy==2:
+            total_feedback = sum(map(lambda x: sum([ len(x[k]) for k in x.keys()]), self.goldstandard.values()))
+        else:
+            # an epoch will be defined with respect to the total number of positive pairs
+            total_feedback = sum(map(lambda x: sum([ len(x[k]) for k in x.keys() if k>0]), self.goldstandard.values()))
+          
+        return total_feedback//self.b_size
+    
+    def get_config(self):
+        super_config = super().get_config()
+        
+        data_json = {
+            "query_list": self.query_list,
+            "goldstandard": self.goldstandard,
+            "collection": self.collection,
+            "query_sampling_strategy": self.query_sampling_strategy,
+        } 
+        
+        return dict(data_json, **super_config) #fast dict merge
+    
 class TrainCollectionV2(BaseCollection):
     def __init__(self, 
                  query_list, 
@@ -262,12 +448,14 @@ class TestCollectionV2(BaseCollection):
         self.query_list = query_list 
         self.query_docs = query_docs
         self.evaluator = evaluator
-        
+
         self.skipped_queries = skipped_queries
         
         if isinstance(self.evaluator, dict):
             self.evaluator = self.evaluator["class"].load(**self.evaluator)
+    
 
+    
     def get_config(self):
         super_config = super().get_config()
         
@@ -285,7 +473,10 @@ class TestCollectionV2(BaseCollection):
         for query_data in self.query_list:
             if query_data["id"] in self.skipped_queries:
                 continue
-                
+            if query_data["id"] not in self.query_docs:
+                print("[WARNING] -",query_data["id"],"does not have docs, so it will be skipped")
+                continue
+            
             for i in range(0, len(self.query_docs[query_data["id"]]), self.b_size):
                 docs = self.query_docs[query_data["id"]][i:i+self.b_size]
                 
@@ -300,7 +491,7 @@ class TestCollectionV2(BaseCollection):
         metrics = self.evaluate(ranked_format)
         
         if isinstance(output_metris, list):
-            return [ (m, metrics[m]) for m in output_metris]
+            return { m:metrics[m] for m in output_metris}
         else:
             return metrics
     
@@ -462,6 +653,7 @@ def sentence_splitter_builderV2(tokenizer, mode=4, max_sentence_size=21, queries
                 if mode==4:
                     _temp_new_docs = []
                     doc["offset"] = []
+                    doc["untokenized_text"] = doc["text"]
                     for start, end in PunktSentenceTokenizer().span_tokenize(doc["text"]):
                         _temp_new_docs.append(doc["text"][start:end])
                         

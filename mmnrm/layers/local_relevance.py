@@ -91,7 +91,58 @@ class MultipleNgramConvs(tf.keras.layers.Layer):
             return mask[:,:,0]
         else:
             return None
+
+class SimpleMultipleNgramConvs(tf.keras.layers.Layer): 
     
+    def __init__(self,
+                 max_ngram,
+                 filters,
+                 activation="relu",
+                 dtype="float32", 
+                 **kwargs):
+        super(SimpleMultipleNgramConvs, self).__init__(dtype=dtype, **kwargs)
+
+        self.max_ngram = max_ngram
+        self.filters = filters
+        self.activation = activation
+            
+    def build(self, input_shape):
+        
+        self.input_feature_dim = input_shape[-1]
+        
+        self.convolutions = []
+        
+        for n in range(1, self.max_ngram+1):
+            
+            _conv_layer = tf.keras.layers.Conv2D(self.filters, 
+                                                 (n,n),
+                                                 activation=self.activation,
+                                                 padding="SAME",
+                                                 dtype=self.dtype)
+            _conv_layer.build(input_shape)
+            self._trainable_weights += _conv_layer.trainable_weights # mannualy add the trainable weights
+            self.convolutions.append(_conv_layer) 
+
+        super(SimpleMultipleNgramConvs, self).build(input_shape)
+        
+    def call(self, x, mask=None):
+        """
+        x - should be the output of an interaction matrix, i.e, a 3D tensor (4D if batch is accounted)
+        """
+        # forward computation
+        
+        # tensor convolution for the differents ngram (1 to max_ngram).
+        multiple_convs = [ conv(x) for conv in self.convolutions ]
+        
+        resulting_covs = []
+        for conv in multiple_convs:
+            conv = conv * K.expand_dims(K.cast(mask, dtype=self.dtype))
+            resulting_covs.append(conv)
+            
+        return resulting_covs
+    
+    def compute_mask(self, x, mask=None):
+        return None
 
 class MaskedSoftmax(tf.keras.layers.Layer): 
     def __init__(self, mask_value=0, dtype="float32", **kwargs):

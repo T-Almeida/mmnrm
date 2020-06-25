@@ -5,12 +5,14 @@ from collections import defaultdict
 from os.path import join
 import random
 
-def TREC04_queries_transform(queires, type_query="title"):
-    return list(map(lambda x:{"id":x["number"],
-                         "query":x[type_query]
+
+
+def TREC_queries_transform(queires, number_parameter="number", fn = lambda x:x["title"]):
+    return list(map(lambda x:{"id":x[number_parameter],
+                         "query":fn(x)
                         }, queires))
 
-def TREC04_goldstandard_transform(goldstandard):
+def TREC_goldstandard_transform(goldstandard):
     _g = {}
     for _id, relevance in goldstandard.items():
         _g[_id]=defaultdict(list)
@@ -25,10 +27,11 @@ def TREC04_goldstandard_transform(goldstandard):
             
     return _g
 
-def TREC04_results_transform(results):
+# fn should be identity: "lambda x:x" (pls replace this default function)
+def TREC_results_transform(results, fn = lambda x:{"id":x["DOCNO"], "text":x["HEADER"]+" "+x["HEADLINE"]+" "+x["TEXT"]}):
     _g = {}
     for _id, relevance in results.items():
-        _g[_id] = list(map(lambda x:{"id":x["DOCNO"], "text":x["HEADER"]+" "+x["HEADLINE"]+" "+x["TEXT"]}, relevance))
+        _g[_id] = list(map(fn, relevance))
     return _g
 
 def TREC04_merge_goldstandard_files(list_of_files, path_to_store):
@@ -41,4 +44,9 @@ def TREC04_merge_goldstandard_files(list_of_files, path_to_store):
                     wf.write(rf)
                     
     return name
-    
+   
+# backwards compatibility
+TREC04_queries_transform = TREC_queries_transform
+TREC04_goldstandard_transform = TREC_goldstandard_transform
+TREC04_results_transform = TREC_results_transform
+ 

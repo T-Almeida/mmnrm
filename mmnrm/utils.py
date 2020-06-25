@@ -4,6 +4,7 @@ import tensorflow as tf
 import h5py
 import pickle
 import mmnrm.modelsv2
+from datetime import datetime as dt
 
 def set_random_seed(seed_value=42):
     tf.random.set_seed(seed_value)
@@ -32,10 +33,12 @@ def save_model(file_name, model):
     # keep using h5py for weights
     save_model_weights(file_name, model)
     
-def load_model(file_name):
+def load_model(file_name, change_config={}):
     
     with open(file_name+".cfg","rb") as f:
         cfg = pickle.load(f)
+    
+    cfg["model"] = merge_dicts(cfg["model"], change_config)
     
     # create the model with the correct configuration
     model = getattr(mmnrm.modelsv2, cfg['func_name'])(**cfg)
@@ -81,3 +84,11 @@ def overlap(snippetA, snippetB):
             return snippetB[1] - snippetA[0] + 1
         
     return 0
+
+def to_date(_str):
+    for fmt in ("%Y-%m", "%Y-%m-%d", "%Y"):
+        try:
+            return dt.strptime(_str, fmt)
+        except ValueError:
+            pass
+    raise ValueError("No format found")

@@ -1,3 +1,8 @@
+import tempfile
+import shutil
+import os 
+import subprocess
+
 def f_recall(predictions, expectations, at=500):
     """
     predictions: list of list of pmid
@@ -109,7 +114,7 @@ class BioASQ_Evaluator(Evaluator):
         super_config = super().get_config()
         
         data_json = {
-            "goldstandard": self.goldstandard
+            "goldstandard": self.goldstandard,
             "bioasq_version": self.bioasq_version
         }
         
@@ -154,12 +159,12 @@ class BioASQ_Evaluator(Evaluator):
         
         return metrics
     
-class TREC_Robust04_Evaluator(Evaluator):
+class TREC_Evaluator(Evaluator):
     def __init__(self,
                  goldstandard_trec_file,
                  trec_script_eval_path,
                  **kwargs):
-        super(Evaluator, self).__init__(**kwargs)
+        super(Evaluator, self).__init__()
         self.goldstandard_trec_file = goldstandard_trec_file 
         self.trec_script_eval_path = trec_script_eval_path
         
@@ -192,7 +197,7 @@ class TREC_Robust04_Evaluator(Evaluator):
                         
             # evaluate
             trec_eval_res = subprocess.Popen(
-                [self.trec_script_eval_path, '-m', 'all_trec', self.goldstandard_trec_file, os.path.join(temp_dir, "qret.txt")],
+                [self.trec_script_eval_path, '-c' ,'-M1000','-m', 'all_trec', self.goldstandard_trec_file, os.path.join(temp_dir, "qret.txt")],
                 stdout=subprocess.PIPE, shell=False)
 
             (out, err) = trec_eval_res.communicate()
@@ -209,3 +214,4 @@ class TREC_Robust04_Evaluator(Evaluator):
             
         return metrics
 
+TREC_Robust04_Evaluator = TREC_Evaluator
