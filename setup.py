@@ -9,6 +9,6 @@ setup(
     author='Tiago Almeida',
     author_email='tiagomeloalmeida@ua.pt',
     keywords=['nir','neural','networks','keras','tensorflow'],
-    install_requires=["tensorflow==2.0.0"],
+    install_requires=["tensorflow==2.0.3"],
     url='https://github.com/T-Almeida/mmnrm'
 )
