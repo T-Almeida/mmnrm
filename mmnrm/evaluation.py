@@ -202,6 +202,8 @@ class TREC_Evaluator(Evaluator):
 
             (out, err) = trec_eval_res.communicate()
             trec_eval_res = out.decode("utf-8")
+            #print("trec_result")
+            #print(trec_eval_res)
             
             metrics = self.__metrics_to_dict(trec_eval_res)
 

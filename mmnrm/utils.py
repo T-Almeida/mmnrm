@@ -6,6 +6,7 @@ import pickle
 import mmnrm.modelsv2
 from datetime import datetime as dt
 
+
 def set_random_seed(seed_value=42):
     tf.random.set_seed(seed_value)
     random.seed(seed_value)
