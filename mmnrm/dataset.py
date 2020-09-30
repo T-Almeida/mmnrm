@@ -414,7 +414,7 @@ class TrainCollectionV2(BaseCollection):
         } 
         
         return dict(data_json, **super_config) #fast dict merge
-    
+
     
 class TestCollectionV2(BaseCollection):
     def __init__(self, 
@@ -450,7 +450,7 @@ class TestCollectionV2(BaseCollection):
         self.evaluator = evaluator
 
         self.skipped_queries = skipped_queries
-        
+      
         if isinstance(self.evaluator, dict):
             self.evaluator = self.evaluator["class"].load(**self.evaluator)
     
@@ -467,20 +467,53 @@ class TestCollectionV2(BaseCollection):
         } 
         
         return dict(data_json, **super_config) #fast dict merge
-    
+        
     def _generate(self, **kwargs):
         
+        query_ids = []
+        queries = []
+        query_docs = []
+        i=0
+        
         for query_data in self.query_list:
+
             if query_data["id"] in self.skipped_queries:
                 continue
             if query_data["id"] not in self.query_docs:
                 print("[WARNING] -",query_data["id"],"does not have docs, so it will be skipped")
                 continue
             
-            for i in range(0, len(self.query_docs[query_data["id"]]), self.b_size):
-                docs = self.query_docs[query_data["id"]][i:i+self.b_size]
+            while True: #do while
                 
-                yield query_data["id"], query_data["query"], docs
+                left_space = self.b_size-len(flat_list(query_docs))
+                if len(self.query_docs[query_data["id"]][i:])<left_space:
+                    # all the documents fit the batch
+                    query_docs.append(self.query_docs[query_data["id"]][i:])
+                    i=0
+                else:
+                    # docs do not fit in the batch
+                    query_docs.append(self.query_docs[query_data["id"]][i:i+left_space])
+                    i = i+left_space
+                
+                query_ids.append(query_data["id"])
+                queries.append(query_data["query"])
+                
+                print(query_data["id"], i, len(flat_list(query_docs)))
+                #ouptup accoring to the batch size
+                if len(flat_list(query_docs))>=self.b_size:
+                    yield query_ids, queries, query_docs
+                    # reset vars
+                    query_ids = []
+                    queries = []
+                    query_docs = []
+                
+                
+                if i==0:
+                    break
+
+                
+
+            
     
     def evaluate_pre_rerank(self, output_metris=["recall_100", "map_cut_20", "ndcg_cut_20", "P_20"]):
         """
@@ -538,7 +571,7 @@ def compute_extra_features(query_tokens, tokenized_sentences_doc, idf_fn):
     
     
     
-def sentence_splitter_builderV2(tokenizer, mode=4, max_sentence_size=21, queries_sw=None, docs_sw=None):
+def sentence_splitter_builderV2(tokenizer, mode=4, max_sentence_size=21, queries_sw=None, docs_sw=None, save_tokenizer_on_test=True):
     """
     Return a transform_inputs_fn for training and test as a tuple
     
@@ -637,53 +670,64 @@ def sentence_splitter_builderV2(tokenizer, mode=4, max_sentence_size=21, queries
     def test_splitter(data_generator):
 
         for _id, query, docs in data_generator:
+            tokenized_queries = []
+            for i in range(len(_id)):
+                # tokenization
+                tokenized_query = tokenizer.texts_to_sequences([query[i]])[0]
 
-            # tokenization
-            tokenized_query = tokenizer.texts_to_sequences([query])[0]
-            
-            if queries_sw is not None:
-                tokenized_query = [token for token in tokenized_query if token not in queries_sw] 
-            
-            for doc in docs:
-                if isinstance(doc["text"], list):
-                    continue # cached tokenization
-
-                # sentence splitting
-                new_docs = []
-                if mode==4:
-                    _temp_new_docs = []
-                    doc["offset"] = []
-                    doc["untokenized_text"] = doc["text"]
-                    for start, end in PunktSentenceTokenizer().span_tokenize(doc["text"]):
-                        _temp_new_docs.append(doc["text"][start:end])
-                        
-                        if start<(len(doc["title"])-1):
-                            doc["offset"].append(["title",(start, end), doc["text"][start:end], []])
-                        else:
-                            doc["offset"].append(["abstract", (start-len(doc["title"]), end-len(doc["title"])), doc["text"][start:end], []])
-                        
-                    _temp_new_docs = tokenizer.texts_to_sequences(_temp_new_docs)
-                    
-                    if docs_sw is not None:
-                        for tokenized_docs in _temp_new_docs:
-                            tokenized_docs = [token for token in tokenized_docs if token not in docs_sw]
-                    
-                    #doc["extra_features"] = compute_extra_features(tokenized_query, _temp_new_docs, idf_from_id_token)+[doc["score"]]
-                    
-                    for k,t_q in enumerate(tokenized_query):
-                        new_docs.append([])
-                        for l,_new_doc in enumerate(_temp_new_docs):
-                            for i,t_d in enumerate(_new_doc):
-                                if t_d==t_q:
-                                    new_docs[-1].append(_new_doc)
-                                    doc["offset"][l][-1].append(k)
-                                    break
+                if queries_sw is not None:
+                    tokenized_query = [token for token in tokenized_query if token not in queries_sw] 
+                
+                if save_tokenizer_on_test:
+                    tokenized_queries.append(tokenized_query)
                 else:
-                    raise NotImplementedError("Missing implmentation for mode "+str(mode))
+                    tokenized_queries.append(query[i]) # the tokenization isnt save
+                    
+        
+                for doc in docs[i]:
+                    if isinstance(doc["text"], list):
+                        continue # cached tokenization
+
+                    # sentence splitting
+                    new_docs = []
+                    if mode==4:
+                        _temp_new_docs = []
+                        doc["offset"] = []
+                        doc["untokenized_text"] = doc["text"]
+                        for start, end in PunktSentenceTokenizer().span_tokenize(doc["text"]):
+                            _temp_new_docs.append(doc["text"][start:end])
+
+                            if start<(len(doc["title"])-1):
+                                doc["offset"].append(["title",(start, end), doc["text"][start:end], []])
+                            else:
+                                doc["offset"].append(["abstract", (start-len(doc["title"]), end-len(doc["title"])), doc["text"][start:end], []])
+                        
+                        tokenized_docs = tokenizer.texts_to_sequences(_temp_new_docs)
+
+                        if docs_sw is not None:
+                            for t_doc in tokenized_docs:
+                                t_doc = [token for token in t_doc if token not in docs_sw]
+
+                        #doc["extra_features"] = compute_extra_features(tokenized_query, _temp_new_docs, idf_from_id_token)+[doc["score"]]
+
+                        for k,t_q in enumerate(tokenized_query):
+                            new_docs.append([])
+                            for l,_new_doc in enumerate(tokenized_docs):
+                                for i,t_d in enumerate(_new_doc):
+                                    if t_d==t_q:
+                                        if save_tokenizer_on_test:
+                                            new_docs[-1].append(_new_doc)
+                                        else:
+                                            new_docs[-1].append(_temp_new_docs[l])
+                                        doc["offset"][l][-1].append(k)
+                                        break
+                    else:
+                        raise NotImplementedError("Missing implmentation for mode "+str(mode))
+
+                    doc["text"] = new_docs
+                
                                                                     
-                doc["text"] = new_docs
-                                                                    
-            yield _id, tokenized_query, docs
+            yield _id, tokenized_queries, docs
 
     return train_splitter, test_splitter
 
