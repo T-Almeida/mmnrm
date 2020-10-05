@@ -28,7 +28,7 @@ def load_model_weights(file_name, model):
             weight.append(f['weight'+str(i)][:])
         model.set_weights(weight)
 
-def load_sentence_generator(cfg, tk=None, return_tk=False):
+def load_sentence_generator(cfg, tk=None, return_tk=False, return_train=False):
 
     if tk is None:
         tk = load_tokenizer(cfg)
@@ -66,6 +66,33 @@ def load_sentence_generator(cfg, tk=None, return_tk=False):
                                                                                       max_sentence_size=max_input_sentence,
                                                                                       mode=4)
     
+    def train_input_generator(data_generator):
+        data_generator = train_sentence_generator(data_generator)
+
+        while True:
+            query, pos_docs, pos_extra_features, neg_docs, neg_extra_features = next(data_generator)
+
+            query_idf = np.array([list(map(lambda x: idf_from_id_token(x), t_q)) for t_q in query])
+
+            # padding
+            for i in range(len(pos_docs)):
+                pos_docs[i] = pad_docs(pos_docs[i], max_lim=model_cfg['max_q_length'])
+                neg_docs[i] = pad_docs(neg_docs[i], max_lim=model_cfg['max_q_length'])
+
+                for q in range(len(pos_docs[i])):
+
+                    pos_docs[i][q] = pad_docs(pos_docs[i][q], max_lim=model_cfg['max_s_per_q_term'])
+                    neg_docs[i][q] = pad_docs(neg_docs[i][q], max_lim=model_cfg['max_s_per_q_term'])
+
+                    pos_docs[i][q] = pad_sentences(pos_docs[i][q])
+                    neg_docs[i][q] = pad_sentences(neg_docs[i][q])
+
+            query = pad_query(query)
+            query_idf = pad_query(query_idf, dtype="float32")
+            
+            yield [query, np.array(pos_docs), query_idf], [query,  np.array(neg_docs), query_idf]
+            
+            
     def test_input_generator(data_generator):
 
         data_generator = test_sentence_generator(data_generator)
@@ -105,10 +132,11 @@ def load_sentence_generator(cfg, tk=None, return_tk=False):
                 
             yield flat_list(ids_queries), [np.array(flat_list(tokenized_queries)), np.array(tokenized_docs), np.array(flat_list(queries_idf))], ids_docs, offsets_docs
     
+    
     if return_tk:
-        return test_input_generator, tk
+        return train_input_generator, test_input_generator, tk
     else:
-        return test_input_generator
+        return train_input_generator, test_input_generator
     
     
 
