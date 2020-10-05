@@ -498,7 +498,10 @@ class TestCollectionV2(BaseCollection):
                 query_ids.append(query_data["id"])
                 queries.append(query_data["query"])
                 
-                print(query_data["id"], i, len(flat_list(query_docs)))
+                # DEBUG PRINTTTTT
+                #print(query_data["id"], i, len(flat_list(query_docs)))
+                
+                
                 #ouptup accoring to the batch size
                 if len(flat_list(query_docs))>=self.b_size:
                     yield query_ids, queries, query_docs

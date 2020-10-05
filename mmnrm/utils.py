@@ -112,9 +112,9 @@ def load_sentence_generator(cfg, tk=None, return_tk=False):
     
     
 
-def load_neural_model(path_to_weights):
+def load_neural_model(path_to_weights, return_snippets_score=True):
     
-    rank_model = load_model(path_to_weights, change_config={"return_snippets_score":True})
+    rank_model = load_model(path_to_weights, change_config={"return_snippets_score":return_snippets_score})
     tk = rank_model.tokenizer  
 
     return rank_model, load_sentence_generator(rank_model.savable_config, tk)
