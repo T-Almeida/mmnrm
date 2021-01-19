@@ -211,12 +211,18 @@ class Validation(Callback):
         q_scores = defaultdict(list)
 
         for i, _out in enumerate(generator_Y):
-            query_id, Y, docs_ids = _out
+            query_id, Y, docs_ids, _ = _out
             s_time = time.time()
             scores = model_score_fn(Y)[:,0].tolist()
             if not i%50:
                 print("\rEvaluation {} | avg 50-time {}".format(i, time.time()-s_time), end="\r")
-            q_scores[query_id].extend(list(zip(docs_ids,scores)))
+        
+            for i in range(len(scores)):
+
+                #q_scores[query_id].extend(list(zip(docs_ids,scores)))
+                #q_scores[query_id[i]].append({"id":docs_info[i],
+                #                              "score":scores[i]})
+                q_scores[query_id[i]].append((docs_ids[i],scores[i]))
 
         # sort the rankings
         for query_id in q_scores.keys():

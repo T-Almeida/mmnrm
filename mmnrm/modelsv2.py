@@ -85,13 +85,13 @@ def deep_rank(max_q_length=30,
     
     kernel_size = tuple(kernel_size)
     
-    return_embeddings = q_term_weight_mode==0
+    return_q_embeddings = q_term_weight_mode==0
     
     input_query = tf.keras.layers.Input((max_q_length,), dtype="int32") # (None, Q)
     input_doc = tf.keras.layers.Input((max_q_length, max_s_per_q_term, max_s_length), dtype="int32") # (None, P, S)
     input_query_idf = tf.keras.layers.Input((max_q_length,), dtype="float32")
     
-    interactions = SemanticInteractions(emb_matrix, return_embeddings=return_embeddings, learn_context=train_context_emgeddings)
+    interactions = SemanticInteractions(emb_matrix, return_q_embeddings=return_q_embeddings, learn_context=train_context_emgeddings)
     
     if extraction_mode==0:
         conv = tf.keras.layers.Conv2D(filters=filters, kernel_size=(3,3), activation=activation)
@@ -99,7 +99,7 @@ def deep_rank(max_q_length=30,
 
         def extract(x):
             if return_embeddings:
-                x, query_embeddings, _ = interactions(x)
+                x, query_embeddings = interactions(x)
             else:
                 x = interactions(x)
                 query_embeddings = K.expand_dims(input_query_idf, axis=-1)
@@ -116,8 +116,8 @@ def deep_rank(max_q_length=30,
         concatenate = tf.keras.layers.Concatenate(axis=-1)
         
         def extract(x):
-            if return_embeddings:
-                x_interaction, query_embeddings, _ = interactions(x)
+            if return_q_embeddings:
+                x_interaction, query_embeddings = interactions(x)
             else:
                 x_interaction = interactions(x)
                 query_embeddings = K.expand_dims(input_query_idf, axis=-1)
@@ -138,8 +138,8 @@ def deep_rank(max_q_length=30,
         kmax_pool = GlobalKmax2D()
         
         def extract(x):
-            if return_embeddings:
-                x_interaction, query_embeddings, _ = interactions(x)
+            if return_q_embeddings:
+                x_interaction, query_embeddings = interactions(x)
             else:
                 x_interaction = interactions(x)
                 query_embeddings = K.expand_dims(input_query_idf, axis=-1)
@@ -153,8 +153,8 @@ def deep_rank(max_q_length=30,
         gru_pacrr = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(1, activation=activation))
         squeeze_l = tf.keras.layers.Lambda(lambda y: tf.squeeze(y, axis=-1))
         def extract(x):
-            if return_embeddings:
-                x_interaction, query_embeddings, _ = interactions(x)
+            if return_q_embeddings:
+                x_interaction, query_embeddings = interactions(x)
             else:
                 x_interaction = interactions(x)
                 query_embeddings = K.expand_dims(input_query_idf, axis=-1)
@@ -174,8 +174,8 @@ def deep_rank(max_q_length=30,
         concatenate = tf.keras.layers.Concatenate(axis=-1)
         
         def extract(x):
-            if return_embeddings:
-                x_interaction, query_embeddings, _ = interactions(x)
+            if return_q_embeddings:
+                x_interaction, query_embeddings = interactions(x)
             else:
                 x_interaction = interactions(x)
                 query_embeddings = K.expand_dims(input_query_idf, axis=-1)
@@ -202,8 +202,8 @@ def deep_rank(max_q_length=30,
         exact_signals = ExactInteractions()
         
         def extract(x):
-            if return_embeddings:
-                x_interaction, query_embeddings, _ = interactions(x)
+            if return_q_embeddings:
+                x_interaction, query_embeddings = interactions(x)
             else:
                 x_interaction = interactions(x)
                 query_embeddings = K.expand_dims(input_query_idf, axis=-1)
@@ -229,8 +229,8 @@ def deep_rank(max_q_length=30,
         exact_signals = ExactInteractions()
         
         def extract(x):
-            if return_embeddings:
-                x_interaction, query_embeddings, _ = interactions(x)
+            if return_q_embeddings:
+                x_interaction, query_embeddings = interactions(x)
             else:
                 x_interaction = interactions(x)
                 query_embeddings = K.expand_dims(input_query_idf, axis=-1)
@@ -355,3 +355,229 @@ def deep_rank(max_q_length=30,
     model = tf.keras.models.Model(inputs=[input_query, input_doc, input_query_idf], outputs=_output)
     model.sentence_tensor = output_i_stack
     return model
+
+@savable_model
+def sibm(emb_matrix,
+         max_q_terms=30,
+         max_passages=20,
+         max_p_terms=30,
+         filters=16,
+         kernel_size=[3,3],
+         match_threshold = 0.99,
+         activation="mish",
+         setence_activation="sigmoid",
+         use_avg_pool=True,
+         use_kmax_avg_pool=True,
+         top_k = 5,
+         score_hidden_units = None):
+    
+    if activation=="mish":
+        activation = mish
+    
+    if score_hidden_units is None:
+        score_hidden_units = top_k
+    
+    kernel_size = tuple(kernel_size)
+        
+    input_query = tf.keras.layers.Input((max_q_terms,), dtype="int32") # (None, Q)
+    input_doc = tf.keras.layers.Input((max_passages, max_p_terms,), dtype="int32") # (None, P, S)
+    
+    def masking(x, mask=None):
+        return x!=0
+
+    masking_layer = tf.keras.layers.Lambda(lambda x:x, mask=masking, dtype='int32')
+    
+    semantic_interaction_layer = SemanticInteractions(emb_matrix, return_q_embeddings=True, einsum="bq,bps->bpqs")
+    
+    def embedding_matches_layer(x):
+        x, query_embeddings = semantic_interaction_layer(x)
+        
+        query_matches = tf.cast(tf.reduce_sum(tf.cast(tf.squeeze(x, axis=-1)>=match_threshold, tf.int8), axis=-1)>0,tf.int8)
+        
+        x = tf.reshape(x, shape=(-1, max_q_terms, max_p_terms, 1))
+
+        return x, query_matches, query_embeddings
+    
+    ## convolutions
+    conv = tf.keras.layers.Conv2D(filters=filters, kernel_size=kernel_size, padding="SAME", activation=activation)
+    
+    ## pooling
+    max_pool = tf.keras.layers.GlobalMaxPool2D()
+    avg_pool = tf.keras.layers.GlobalAveragePooling2D()
+    kmax_avg_pool = GlobalKmaxAvgPooling2D(kmax=5)
+
+    ## concatenate layer
+    concatenate = tf.keras.layers.Concatenate(axis=-1)
+    
+    ## Dense for sentence
+    setence_dense = tf.keras.layers.Dense(1, activation=setence_activation)
+    
+    ## Query term importance
+    qtw_layer = QueryTermWeighting()
+    
+    def apriori_importance_f(x):
+        query_input, query_matches, query_embeddings = x
+        ## sentence a priori importance
+        query_input_masked = masking_layer(query_input)        
+        
+        ## compute the query term importance
+        query_weights = qtw_layer(query_embeddings, mask=query_input_masked._keras_mask)
+        
+        query_matches = tf.cast(query_matches, "float32")
+
+        return tf.einsum("bpq,bq->bp", query_matches, query_weights)
+        
+    apriori_importance_layer = tf.keras.layers.Lambda(apriori_importance_f)
+    
+    def sentence_relevance_nn(x, apriori_importance):
+
+        ## sentence analysis
+        x = conv(x)
+        signals = [max_pool(x)]
+        
+        if use_avg_pool:
+            signals += [avg_pool(x)]
+            
+        if use_kmax_avg_pool:
+            signals += [kmax_avg_pool(x)]
+        
+        x = concatenate(signals)
+        ## score
+        x = setence_dense(x)
+        x = tf.reshape(x, shape=(-1,max_passages,))
+        
+        # combined score (weighted score)
+        x = apriori_importance * x
+        
+        x, _ = tf.math.top_k(x, k=top_k, sorted=True)
+        return x
+        
+    l1_score = tf.keras.layers.Dense(score_hidden_units, activation=activation)
+    l2_score = tf.keras.layers.Dense(1)
+    
+    def document_score(x):
+        x = l1_score(x)
+        x = l2_score(x)
+        return x
+    
+    interaction_matrix, query_matches, query_embeddings = embedding_matches_layer([input_query, input_doc])
+    
+    apriori_importance = apriori_importance_layer([input_query, query_matches, query_embeddings])
+    
+    x = sentence_relevance_nn(interaction_matrix, apriori_importance)
+    
+    doc_score = document_score(x)
+    
+    return tf.keras.models.Model(inputs=[input_query, input_doc], outputs=[doc_score])
+
+
+@savable_model
+def sibm_negative_scores(emb_matrix,
+                         max_q_terms=30,
+                         max_passages=20,
+                         max_p_terms=30,
+                         filters=16,
+                         kernel_size=[3,3],
+                         match_threshold = 0.99,
+                         activation="mish",
+                         setence_activation="selu",
+                         use_avg_pool=True,
+                         use_kmax_avg_pool=True,
+                         top_k = 5):
+    
+    if activation=="mish":
+        activation = mish
+    
+    kernel_size = tuple(kernel_size)
+        
+    input_query = tf.keras.layers.Input((max_q_terms,), dtype="int32") # (None, Q)
+    input_doc = tf.keras.layers.Input((max_passages, max_p_terms,), dtype="int32") # (None, P, S)
+    
+    def masking(x, mask=None):
+        return x!=0
+
+    masking_layer = tf.keras.layers.Lambda(lambda x:x, mask=masking, dtype='int32')
+    
+    semantic_interaction_layer = SemanticInteractions(emb_matrix, return_q_embeddings=True, einsum="bq,bps->bpqs")
+    
+    def embedding_matches_layer(x):
+        x, query_embeddings = semantic_interaction_layer(x)
+        
+        query_matches = tf.cast(tf.reduce_sum(tf.cast(tf.squeeze(x, axis=-1)>=match_threshold, tf.int8), axis=-1)>0,tf.int8)
+        
+        x = tf.reshape(x, shape=(-1, max_q_terms, max_p_terms, 1))
+
+        return x, query_matches, query_embeddings
+    
+    ## convolutions
+    conv = tf.keras.layers.Conv2D(filters=filters, kernel_size=kernel_size, padding="SAME", activation=activation)
+    
+    ## pooling
+    max_pool = tf.keras.layers.GlobalMaxPool2D()
+    avg_pool = tf.keras.layers.GlobalAveragePooling2D()
+    kmax_avg_pool = GlobalKmaxAvgPooling2D(kmax=5)
+
+    ## concatenate layer
+    concatenate = tf.keras.layers.Concatenate(axis=-1)
+    
+    ## Dense for sentence
+    setence_dense = tf.keras.layers.Dense(1, activation=setence_activation)
+    
+    ## Query term importance
+    qtw_layer = QueryTermWeighting()
+    
+    def apriori_importance_f(x):
+        query_input, query_matches, query_embeddings = x
+        ## sentence a priori importance
+        query_input_masked = masking_layer(query_input)        
+        
+        ## compute the query term importance
+        query_weights = qtw_layer(query_embeddings, mask=query_input_masked._keras_mask)
+        
+        query_matches = tf.cast(query_matches, "float32")
+        
+        return tf.einsum("bpq,bq->bp", query_matches, query_weights), query_weights
+        
+    apriori_importance_layer = tf.keras.layers.Lambda(apriori_importance_f)
+    
+    def sentence_relevance_nn(x, apriori_importance):
+
+        ## sentence analysis
+        x = conv(x)
+        signals = [max_pool(x)]
+        
+        if use_avg_pool:
+            signals += [avg_pool(x)]
+            
+        if use_kmax_avg_pool:
+            signals += [kmax_avg_pool(x)]
+        
+        x = concatenate(signals)
+        ## score
+        x = setence_dense(x)
+        x = tf.reshape(x, shape=(-1,max_passages,))
+        
+        # combined score (weighted score)
+        
+        _combined_score = apriori_importance * x + (tf.cast(apriori_importance==0, "float32")*-100)
+        
+        x, _ = tf.math.top_k(_combined_score, k=top_k, sorted=False)
+        return x, _combined_score
+        
+    l1_score = tf.keras.layers.Dense(top_k, activation=activation)
+    l2_score = tf.keras.layers.Dense(1)
+    
+    def document_score(x):
+        first_activation = l1_score(x)
+        second_activation = l2_score(first_activation)
+        return second_activation, first_activation
+    
+    interaction_matrix, query_matches, query_embeddings = embedding_matches_layer([input_query, input_doc])
+    
+    apriori_importance, query_weigts = apriori_importance_layer([input_query, query_matches, query_embeddings])
+    
+    x, combined_score = sentence_relevance_nn(interaction_matrix, apriori_importance)
+    
+    doc_score, first_activation  = document_score(x)
+    
+    return tf.keras.models.Model(inputs=[input_query, input_doc], outputs=[doc_score])

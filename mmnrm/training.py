@@ -120,7 +120,7 @@ class PairwiseTraining(BaseTraining):
         q_scores = defaultdict(list)
 
         for i, _out in enumerate(generator_Y):
-            query_id, Y, docs_ids = _out
+            query_id, Y, docs_ids, _ = _out
             s_time = time.time()
             scores = self.model_score(Y).numpy()[:,0].tolist()
             print("\rEvaluation {} | time {}".format(i, time.time()-s_time), end="\r")

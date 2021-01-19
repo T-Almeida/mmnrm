@@ -421,6 +421,7 @@ class TestCollectionV2(BaseCollection):
                  query_list,
                  query_docs, 
                  evaluator=None,
+                 top_k=1000,
                  skipped_queries = [],
                  **kwargs):
         """
@@ -448,7 +449,7 @@ class TestCollectionV2(BaseCollection):
         self.query_list = query_list 
         self.query_docs = query_docs
         self.evaluator = evaluator
-
+        self.top_k = top_k
         self.skipped_queries = skipped_queries
       
         if isinstance(self.evaluator, dict):
@@ -463,11 +464,16 @@ class TestCollectionV2(BaseCollection):
             "query_list": self.query_list,
             "query_docs": self.query_docs,
             "skipped_queries": self.skipped_queries,
-            "evaluator": self.evaluator.get_config()
+            "evaluator": self.evaluator.get_config(),
+            "top_k":self.top_k
         } 
         
         return dict(data_json, **super_config) #fast dict merge
-        
+    
+    def set_topk(self, new_top_k):
+        self.top_k = new_top_k
+        return self
+    
     def _generate(self, **kwargs):
         
         query_ids = []
@@ -475,24 +481,27 @@ class TestCollectionV2(BaseCollection):
         query_docs = []
         i=0
         
+        #apply the top_k filter
+        filter_query_docs = { k:v[:self.top_k] for k,v in self.query_docs.items()}
+        
         for query_data in self.query_list:
 
             if query_data["id"] in self.skipped_queries:
                 continue
-            if query_data["id"] not in self.query_docs:
+            if query_data["id"] not in filter_query_docs:
                 print("[WARNING] -",query_data["id"],"does not have docs, so it will be skipped")
                 continue
             
             while True: #do while
                 
                 left_space = self.b_size-len(flat_list(query_docs))
-                if len(self.query_docs[query_data["id"]][i:])<left_space:
+                if len(filter_query_docs[query_data["id"]][i:])<left_space:
                     # all the documents fit the batch
-                    query_docs.append(self.query_docs[query_data["id"]][i:])
+                    query_docs.append(filter_query_docs[query_data["id"]][i:])
                     i=0
                 else:
                     # docs do not fit in the batch
-                    query_docs.append(self.query_docs[query_data["id"]][i:i+left_space])
+                    query_docs.append(filter_query_docs[query_data["id"]][i:i+left_space])
                     i = i+left_space
                 
                 query_ids.append(query_data["id"])
