@@ -9,8 +9,11 @@ All layers of this module produce an interaction matrix from a query and a sente
 
 class MatrixInteraction(tf.keras.layers.Layer):
     
-    def __init__(self, dtype="float32", **kwargs):
+    def __init__(self, einsum = "bq,bd->bqd", dtype="float32", **kwargs):
         super(MatrixInteraction, self).__init__(dtype=dtype, **kwargs)
+        self.einsum = einsum
+        self.einsum_emb = einsum.replace(",","e,").replace("-","e-")
+        print("Using einsum for mask",self.einsum,"and with embedding dim",self.einsum_emb)
         
     def build(self, input_shape):
         # capture the query and document sizes because they are fixed
@@ -58,7 +61,7 @@ class MatrixInteractionMasking(MatrixInteraction):
             query_mask = K.cast(self.compute_mask_embedding(x[0]), dtype=self.dtype)
             document_mask = K.cast(self.compute_mask_embedding(x[1]), dtype=self.dtype)
 
-            return K.cast(tf.einsum("bq,bd->bqd", query_mask, document_mask), dtype="bool")
+            return K.cast(tf.einsum(self.einsum, query_mask, document_mask), dtype="bool")
         else:
             return None
     
@@ -103,11 +106,12 @@ class ExactInteractions(MatrixInteractionMasking):
 
 class SemanticBaseInteraction(MatrixInteractionMasking):
     """Abstract class should not be initialized"""
-    def __init__(self, 
+    def __init__(self,
                  learn_term_weights=False,
                  initializer='glorot_uniform',
                  regularizer=None,
-                 return_embeddings = False,
+                 return_q_embeddings = False,
+                 return_p_embeddings = False,
                  **kwargs):
         
         super(SemanticBaseInteraction, self).__init__(**kwargs)
@@ -115,12 +119,13 @@ class SemanticBaseInteraction(MatrixInteractionMasking):
         self.learn_term_weights = learn_term_weights
         self.initializer = initializer
         self.regularizer = regularizer
-        self.return_embeddings = return_embeddings
+        self.return_q_embeddings = return_q_embeddings
+        self.return_p_embeddings = return_p_embeddings
         
     def _forward_interaction_matrix(self, query_embeddings, sentence_embeddings, mask):
         
         
-        interaction_matrix = tf.einsum("bqe,bde->bqd", query_embeddings, sentence_embeddings) 
+        interaction_matrix = tf.einsum(self.einsum_emb, query_embeddings, sentence_embeddings) 
         
         if mask is not None:
             interaction_matrix = interaction_matrix * mask
@@ -205,10 +210,12 @@ class SemanticInteractions(SemanticBaseInteraction):
         # compute interaction matrix and the term weights
         interaction_matrix = self._forward_interaction_matrix(query_embeddings, sentence_embeddings, mask)
         
-        if self.return_embeddings:
-            return [interaction_matrix, query_embeddings, sentence_embeddings]
-        else:
-            return interaction_matrix
+        if self.return_q_embeddings:
+            interaction_matrix = [interaction_matrix, query_embeddings]
+        if self.return_p_embeddings:
+            interaction_matrix = [interaction_matrix, sentence_embeddings]
+        
+        return interaction_matrix
 
 
         
@@ -316,3 +323,6 @@ class ContextedSemanticInteractions(SemanticBaseInteraction):
             return interaction_matrix, query_context_embeddings, sentence_context_embeddings
         else:
             return interaction_matrix
+
+        
+        

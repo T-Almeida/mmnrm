@@ -159,4 +159,24 @@ class TermAggregation(TrainableLayer):
         else:
             return x[0] * q_distribution
         
+
+class QueryTermWeighting(TrainableLayer):
+    
+    def build(self, input_shape):
         
+        q_embeddings = int(input_shape[-1]) # q terms embeddings 
+        
+        self.w_q_embeddings = self.add_weight(shape=(q_embeddings,1),
+                                 initializer=self.initializer,
+                                 regularizer=self.regularizer,)
+        
+        super(QueryTermWeighting, self).build(input_shape) 
+    
+    def call(self, x, mask=None):
+        """
+        x - q terms embeddings 
+        """
+        x = tf.einsum("bqe,eo->bq", x, self.w_q_embeddings)
+        # masking
+        x = x + ((1.0 - K.cast(mask, dtype=self.dtype)) * -10000.0)
+        return tf.nn.softmax(x, axis=-1)
