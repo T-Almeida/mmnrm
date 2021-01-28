@@ -11,6 +11,8 @@ import subprocess
 import os
 from collections import defaultdict
 
+from timeit import default_timer as timer
+
 from mmnrm.utils import save_model_weights, load_model_weights, set_random_seed, merge_dicts, flat_list, index_from_list
 from mmnrm.text import TREC04_merge_goldstandard_files
 from mmnrm.callbacks import WandBValidationLogger 
@@ -87,7 +89,7 @@ class PairwiseTraining(BaseTraining):
         return self.model(inputs)
     
     @tf.function # build a static computational graph
-    def training_step(self, pos_in, neg_in):
+    def training_step(self, pos_in, neg_in, custom_output=None):
         print("training step")
         
         if self.transform_model_inputs_callback is not None:
@@ -97,6 +99,11 @@ class PairwiseTraining(BaseTraining):
         with tf.GradientTape() as tape:
             pos_score = self.model_score(pos_in)
             neg_score = self.model_score(neg_in)
+            
+            if custom_output is not None:
+                print("DEBUG custom output")
+                pos_score = custom_output(pos_score)
+                neg_score = custom_output(neg_score)
 
             loss = self.loss(pos_score, neg_score, pos_label, neg_label)
 
@@ -133,7 +140,7 @@ class PairwiseTraining(BaseTraining):
         # evaluate
         return test_set.evaluate(q_scores)
     
-    def train(self, epoch, draw_graph=True):
+    def train(self, epoch, draw_graph=False, custom_output=None):
         
         # create train generator
         steps = self.train_collection.get_steps()
@@ -159,18 +166,18 @@ class PairwiseTraining(BaseTraining):
                 for c in self.callbacks:
                     c.on_step_start(self, e, s)
                     
-                s_time = time.time()
+                s_time = timer()
                 
                 # static TF computational graph for the traning step
-                loss = self.training_step(positive_inputs, negative_inputs)
-                
-                # next batch
-                positive_inputs, negative_inputs = next(generator_X)
+                loss = self.training_step(positive_inputs, negative_inputs, custom_output).numpy()
                 
                 #execute callbacks
-                f_time = time.time()-s_time
+                f_time = timer()-s_time
                 for c in self.callbacks:
-                    c.on_step_end(self, e, s, float(loss), f_time)
+                    c.on_step_end(self, e, s, loss, f_time)
+                    
+                # next batch
+                positive_inputs, negative_inputs = next(generator_X)
             
             #execute callbacks
             for c in self.callbacks:

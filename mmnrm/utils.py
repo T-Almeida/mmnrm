@@ -28,7 +28,7 @@ def load_model_weights(file_name, model):
             weight.append(f['weight'+str(i)][:])
         model.set_weights(weight)
 
-def load_sentence_generator(cfg, tk=None, return_tk=False, return_train=False):
+def load_sentence_generator(cfg, tk=None, return_tk=False):
 
     if tk is None:
         tk = load_tokenizer(cfg)
