@@ -180,3 +180,25 @@ class QueryTermWeighting(TrainableLayer):
         # masking
         x = x + ((1.0 - K.cast(mask, dtype=self.dtype)) * -10000.0)
         return tf.nn.softmax(x, axis=-1)
+    
+    
+class AprioriLayer(TrainableLayer):
+    
+    def __init__(self):
+        super(AprioriLayer, self).__init__()
+        
+        self.qtw_layer = QueryTermWeighting()
+        
+    def call(self, x):
+        
+        query_input, query_matches, query_embeddings = x
+        
+        ## sentence a priori importance
+        query_input_masked = query_input != 0      
+        
+        ## compute the query term importance
+        query_weights = self.qtw_layer(query_embeddings, mask=query_input_masked)
+        
+        query_matches = tf.cast(query_matches, "float32")
+
+        return tf.einsum("bpq,bq->bp", query_matches, query_weights)

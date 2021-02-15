@@ -42,7 +42,7 @@ def mish(inputs):
     return inputs * tf.math.tanh(tf.math.softplus(inputs))
 
 @savable_model
-def deep_rank(max_q_length=30,
+def shallow_interaction_model(max_q_length=30,
               max_s_per_q_term=5,
               max_s_length=30,
               emb_matrix=None,
@@ -412,6 +412,7 @@ def sibm(emb_matrix,
     ## Dense for sentence
     setence_dense = tf.keras.layers.Dense(1, activation=setence_activation)
     
+    """
     ## Query term importance
     qtw_layer = QueryTermWeighting()
     
@@ -428,6 +429,9 @@ def sibm(emb_matrix,
         return tf.einsum("bpq,bq->bp", query_matches, query_weights)
         
     apriori_importance_layer = tf.keras.layers.Lambda(apriori_importance_f)
+    """
+    
+    apriori_importance_layer = AprioriLayer()
     
     def sentence_relevance_nn(x, apriori_importance):
 
@@ -522,7 +526,7 @@ def sibm_negative_scores(emb_matrix,
     
     ## Dense for sentence
     setence_dense = tf.keras.layers.Dense(1, activation=setence_activation)
-    
+    """
     ## Query term importance
     qtw_layer = QueryTermWeighting()
     
@@ -539,6 +543,9 @@ def sibm_negative_scores(emb_matrix,
         return tf.einsum("bpq,bq->bp", query_matches, query_weights), query_weights
         
     apriori_importance_layer = tf.keras.layers.Lambda(apriori_importance_f)
+    """
+    
+    apriori_importance_layer = AprioriLayer()
     
     def sentence_relevance_nn(x, apriori_importance):
 
@@ -574,7 +581,7 @@ def sibm_negative_scores(emb_matrix,
     
     interaction_matrix, query_matches, query_embeddings = embedding_matches_layer([input_query, input_doc])
     
-    apriori_importance, query_weigts = apriori_importance_layer([input_query, query_matches, query_embeddings])
+    apriori_importance = apriori_importance_layer([input_query, query_matches, query_embeddings])
     
     x, combined_score = sentence_relevance_nn(interaction_matrix, apriori_importance)
     
