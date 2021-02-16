@@ -369,7 +369,8 @@ def sibm(emb_matrix,
          use_avg_pool=True,
          use_kmax_avg_pool=True,
          top_k = 5,
-         score_hidden_units = None):
+         score_hidden_units = None,
+         return_snippets_score=False):
     
     if activation=="mish":
         activation = mish
@@ -381,11 +382,6 @@ def sibm(emb_matrix,
         
     input_query = tf.keras.layers.Input((max_q_terms,), dtype="int32") # (None, Q)
     input_doc = tf.keras.layers.Input((max_passages, max_p_terms,), dtype="int32") # (None, P, S)
-    
-    def masking(x, mask=None):
-        return x!=0
-
-    masking_layer = tf.keras.layers.Lambda(lambda x:x, mask=masking, dtype='int32')
     
     semantic_interaction_layer = SemanticInteractions(emb_matrix, return_q_embeddings=True, einsum="bq,bps->bpqs")
     
@@ -412,24 +408,6 @@ def sibm(emb_matrix,
     ## Dense for sentence
     setence_dense = tf.keras.layers.Dense(1, activation=setence_activation)
     
-    """
-    ## Query term importance
-    qtw_layer = QueryTermWeighting()
-    
-    def apriori_importance_f(x):
-        query_input, query_matches, query_embeddings = x
-        ## sentence a priori importance
-        query_input_masked = masking_layer(query_input)        
-        
-        ## compute the query term importance
-        query_weights = qtw_layer(query_embeddings, mask=query_input_masked._keras_mask)
-        
-        query_matches = tf.cast(query_matches, "float32")
-
-        return tf.einsum("bpq,bq->bp", query_matches, query_weights)
-        
-    apriori_importance_layer = tf.keras.layers.Lambda(apriori_importance_f)
-    """
     
     apriori_importance_layer = AprioriLayer()
     
@@ -453,8 +431,7 @@ def sibm(emb_matrix,
         # combined score (weighted score)
         x = apriori_importance * x
         
-        x, _ = tf.math.top_k(x, k=top_k, sorted=True)
-        return x
+        return tf.math.top_k(x, k=top_k, sorted=True)
         
     l1_score = tf.keras.layers.Dense(score_hidden_units, activation=activation)
     l2_score = tf.keras.layers.Dense(1)
@@ -468,11 +445,14 @@ def sibm(emb_matrix,
     
     apriori_importance = apriori_importance_layer([input_query, query_matches, query_embeddings])
     
-    x = sentence_relevance_nn(interaction_matrix, apriori_importance)
+    s_scores, indices = sentence_relevance_nn(interaction_matrix, apriori_importance)
     
-    doc_score = document_score(x)
+    output_list = [document_score(s_scores)]
     
-    return tf.keras.models.Model(inputs=[input_query, input_doc], outputs=[doc_score])
+    if return_snippets_score:
+        output_list += [s_scores, indices]
+    
+    return tf.keras.models.Model(inputs=[input_query, input_doc], outputs=output_list)
 
 
 @savable_model
