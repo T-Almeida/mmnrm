@@ -365,18 +365,19 @@ def sibm(emb_matrix,
          kernel_size=[3,3],
          match_threshold = 0.99,
          activation="mish",
-         setence_activation="sigmoid",
          use_avg_pool=True,
          use_kmax_avg_pool=True,
-         top_k = 5,
+         top_k_list = [3,5,10,15],
          score_hidden_units = None,
-         return_snippets_score=False):
+         semantic_normalized_query_match = False,
+         return_snippets_score = False,
+         DEBUG = False):
     
     if activation=="mish":
         activation = mish
     
     if score_hidden_units is None:
-        score_hidden_units = top_k
+        score_hidden_units = top_k_list[-1]
     
     kernel_size = tuple(kernel_size)
         
@@ -388,7 +389,12 @@ def sibm(emb_matrix,
     def embedding_matches_layer(x):
         x, query_embeddings = semantic_interaction_layer(x)
         
-        query_matches = tf.cast(tf.reduce_sum(tf.cast(tf.squeeze(x, axis=-1)>=match_threshold, tf.int8), axis=-1)>0,tf.int8)
+        if semantic_normalized_query_match:
+            _tensor_squeeze = tf.squeeze(x, axis=-1)
+            query_matches = tf.reduce_sum(tf.cast(_tensor_squeeze>=match_threshold, tf.float32) * _tensor_squeeze, axis=-1)/max_p_terms
+        else:
+            query_matches = tf.cast(tf.reduce_sum(tf.cast(tf.squeeze(x, axis=-1)>=match_threshold, tf.int8), axis=-1)>0,tf.int8)
+        
         
         x = tf.reshape(x, shape=(-1, max_q_terms, max_p_terms, 1))
 
@@ -406,7 +412,7 @@ def sibm(emb_matrix,
     concatenate = tf.keras.layers.Concatenate(axis=-1)
     
     ## Dense for sentence
-    setence_dense = tf.keras.layers.Dense(1, activation=setence_activation)
+    setence_dense = tf.keras.layers.Dense(1, activation="sigmoid")
     
     
     apriori_importance_layer = AprioriLayer()
@@ -428,10 +434,23 @@ def sibm(emb_matrix,
         x = setence_dense(x)
         x = tf.reshape(x, shape=(-1,max_passages,))
         
-        # combined score (weighted score)
         x = apriori_importance * x
         
-        return tf.math.top_k(x, k=top_k, sorted=True)
+        top_k, indeces = tf.math.top_k(x, k=top_k_list[-1], sorted=True)
+        
+        
+        sentence_features = [tf.expand_dims(tf.math.reduce_max(x, axis=-1),axis=-1), 
+                             tf.expand_dims(tf.math.reduce_sum(x, axis=-1),axis=-1), 
+                             tf.expand_dims(tf.math.reduce_mean(x, axis=-1),axis=-1),
+                            ]
+        
+        sentence_features += [ tf.expand_dims(tf.math.reduce_mean(top_k[:,:k], axis=-1),axis=-1) for k in top_k_list]
+
+        return tf.concat(sentence_features, axis=-1), indeces, x
+        #scores, indeces = tf.math.top_k(apriori_importance * x, k=top_k, sorted=True)
+
+            
+        #return scores, indeces, x
         
     l1_score = tf.keras.layers.Dense(score_hidden_units, activation=activation)
     l2_score = tf.keras.layers.Dense(1)
@@ -443,14 +462,17 @@ def sibm(emb_matrix,
     
     interaction_matrix, query_matches, query_embeddings = embedding_matches_layer([input_query, input_doc])
     
-    apriori_importance = apriori_importance_layer([input_query, query_matches, query_embeddings])
+    apriori_importance, query_weigts = apriori_importance_layer([input_query, query_matches, query_embeddings])
     
-    s_scores, indices = sentence_relevance_nn(interaction_matrix, apriori_importance)
+    s_scores, indices, cnn_sentence_scores = sentence_relevance_nn(interaction_matrix, apriori_importance)
     
     output_list = [document_score(s_scores)]
     
     if return_snippets_score:
         output_list += [s_scores, indices]
+        
+    if DEBUG:
+        output_list += [s_scores, apriori_importance, query_weigts, query_matches, cnn_sentence_scores, interaction_matrix]
     
     return tf.keras.models.Model(inputs=[input_query, input_doc], outputs=output_list)
 

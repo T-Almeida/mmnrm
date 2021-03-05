@@ -92,8 +92,11 @@ class PairwiseTraining(BaseTraining):
     def training_step(self, pos_in, neg_in, custom_output=None):
         print("training step")
         
+        pos_label, neg_label = None, None
+        
         if self.transform_model_inputs_callback is not None:
             pos_in, neg_in, pos_label, neg_label = self.transform_model_inputs_callback(pos_in, neg_in)
+        
         
         # manual optimization
         with tf.GradientTape() as tape:

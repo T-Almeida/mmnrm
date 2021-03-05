@@ -201,4 +201,4 @@ class AprioriLayer(TrainableLayer):
         
         query_matches = tf.cast(query_matches, "float32")
 
-        return tf.einsum("bpq,bq->bp", query_matches, query_weights)
+        return tf.einsum("bpq,bq->bp", query_matches, query_weights), query_weights
