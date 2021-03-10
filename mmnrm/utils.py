@@ -4,6 +4,7 @@ import tensorflow as tf
 import h5py
 import pickle
 import mmnrm.modelsv2
+import mmnrm.modelstransformers
 import math
 
 from datetime import datetime as dt
