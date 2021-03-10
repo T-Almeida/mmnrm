@@ -523,7 +523,7 @@ class TestCollectionV2(BaseCollection):
                 if i==0:
                     break
                     
-        if len(flat_list(query_docs))>=0:
+        if len(flat_list(query_docs))>0:
             yield query_ids, queries, query_docs
                 
 
