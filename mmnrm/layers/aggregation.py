@@ -202,3 +202,21 @@ class AprioriLayer(TrainableLayer):
         query_matches = tf.cast(query_matches, "float32")
 
         return tf.einsum("bpq,bq->bp", query_matches, query_weights), query_weights
+    
+
+class AprioriLayerWmask(TrainableLayer):
+    
+    def __init__(self):
+        super(AprioriLayerWmask, self).__init__()
+        
+        self.qtw_layer = QueryTermWeighting()
+        
+    def call(self, x):
+        
+        query_embeddings, query_mask, query_matches = x
+        
+        query_emb = query_embeddings * tf.expand_dims(query_mask, axis=-1)
+
+        query_weights = self.qtw_layer(query_emb, mask=query_mask)
+
+        return tf.reduce_sum(query_weights * query_matches, axis=-1, keepdims=True)
