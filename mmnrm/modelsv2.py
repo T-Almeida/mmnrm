@@ -630,7 +630,7 @@ if not missing:
             else:
                 raise ValueError('Missing checkpoint_name parameter in the config')
 
-            model = func(**kwargs["model"])
+            model = func(**kwargs["model"], checkpoint_name=kwargs['checkpoint_name'])
             kwargs['func_name'] = func.__name__
             model.savable_config = kwargs
             model.tokenizer = tokenizer
@@ -647,7 +647,8 @@ if not missing:
                        bert_train = False,
                        hidden_size = 768,
                        activation = "mish",
-                       top_k_list = [3,5,10,15],): 
+                       top_k_list = [3,5,10,15],
+                       checkpoint_name = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract"): 
 
         if activation=="mish":
             activation = mish
@@ -657,7 +658,7 @@ if not missing:
         input_segments = tf.keras.layers.Input((max_passages, max_input_size, ), dtype="int32") # 
         input_mask_passages = tf.keras.layers.Input((max_passages,), dtype="bool") # (None, P)
 
-        bert_model = TFBertModel.from_pretrained('microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract', 
+        bert_model = TFBertModel.from_pretrained(checkpoint_name, 
                                                  output_attentions = False,
                                                  output_hidden_states = False,
                                                  return_dict=True,
