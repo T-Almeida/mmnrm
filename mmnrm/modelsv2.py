@@ -478,6 +478,9 @@ def sibm(emb_matrix,
     
     return tf.keras.models.Model(inputs=[input_query, input_doc], outputs=output_list)
 
+
+
+
 @savable_model
 def sibm2(emb_matrix,
          max_q_terms=30,
@@ -509,19 +512,7 @@ def sibm2(emb_matrix,
     
     semantic_interaction_layer = SemanticInteractions(emb_matrix, return_q_embeddings=True, einsum="bq,bps->bpqs")
     
-    def embedding_matches_layer(x):
-        x, query_embeddings = semantic_interaction_layer(x)
-        
-        if semantic_normalized_query_match:
-            _tensor_squeeze = tf.squeeze(x, axis=-1)
-            query_matches = tf.reduce_sum(tf.cast(_tensor_squeeze>=match_threshold, tf.float32) * _tensor_squeeze, axis=-1)/max_p_terms
-        else:
-            query_matches = tf.cast(tf.reduce_sum(tf.cast(tf.squeeze(x, axis=-1)>=match_threshold, tf.int8), axis=-1)>0,tf.int8)
-        
-        
-        x = tf.reshape(x, shape=(-1, max_q_terms, max_p_terms, 1))
-
-        return x, query_matches, query_embeddings
+    query_matches_layer = MatchesLayer(match_threshold)
     
     ## convolutions
     conv = tf.keras.layers.Conv2D(filters=filters, kernel_size=kernel_size, padding="SAME", activation=activation)
@@ -541,6 +532,8 @@ def sibm2(emb_matrix,
     apriori_importance_layer = AprioriLayer()
     
     def sentence_relevance_nn(x, apriori_importance, mask_passages):
+        
+        x = tf.reshape(x, shape=(-1, max_q_terms, max_p_terms, 1))
         
         mask_passages = tf.reshape(mask_passages, shape=(-1,)) #None, 1
         mask_passages_indices = tf.cast(tf.where(mask_passages), tf.int32)
@@ -592,7 +585,9 @@ def sibm2(emb_matrix,
         x = l2_score(x)
         return x
     
-    interaction_matrix, query_matches, query_embeddings = embedding_matches_layer([input_query, input_doc])
+    interaction_matrix, query_embeddings = semantic_interaction_layer([input_query, input_doc])
+    
+    query_matches = query_matches_layer(interaction_matrix)
     
     apriori_importance, query_weigts = apriori_importance_layer([input_query, query_matches, query_embeddings])
     

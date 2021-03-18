@@ -220,3 +220,31 @@ class AprioriLayerWmask(TrainableLayer):
         query_weights = self.qtw_layer(query_emb, mask=query_mask)
 
         return tf.reduce_sum(query_weights * query_matches, axis=-1, keepdims=True)
+    
+    
+    
+class MatchesLayer(TrainableLayer):
+    
+    def __init__(self, match_threshold=None):
+        super(MatchesLayer, self).__init__()
+        self.match_threshold = match_threshold
+        
+    def build(self, input_shape):
+
+        if self.match_threshold is None:
+            self.match_threshold = self.add_weight(shape=(1,),
+                                     initializer=self.initializer,
+                                     regularizer=self.regularizer,)
+        
+        super(MatchesLayer, self).build(input_shape) 
+    
+    def call(self, x):
+        
+        threshold = tf.math.sigmoid(self.match_threshold)
+        
+        matches = tf.cast(tf.squeeze(x, axis=-1)>=threshold, tf.int8)
+        
+        query_matches = tf.cast(tf.reduce_sum(matches, axis=-1)>0,tf.int8)
+
+
+        return query_matches
