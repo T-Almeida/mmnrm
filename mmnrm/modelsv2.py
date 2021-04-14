@@ -641,6 +641,7 @@ if not missing:
                        apriori_exact_match = False,
                        bert_train = False,
                        hidden_size = 768,
+                       sentence_hidden_size = None,
                        activation = "mish",
                        top_k_list = [3,5,10,15],
                        checkpoint_name = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract"): 
@@ -666,9 +667,9 @@ if not missing:
             mask_passages = tf.reshape(input_mask_passages, shape=(-1,)) #None, 1
             mask_passages_indices = tf.cast(tf.where(mask_passages), tf.int32)
 
-            input_ids = tf.gather_nd(tf.reshape(input_ids, shape=(-1, 128)),mask_passages_indices)
-            input_masks = tf.gather_nd(tf.reshape(input_masks, shape=(-1, 128)),mask_passages_indices)
-            input_segments = tf.gather_nd(tf.reshape(input_segments, shape=(-1, 128)),mask_passages_indices)
+            input_ids = tf.gather_nd(tf.reshape(input_ids, shape=(-1, max_input_size)),mask_passages_indices)
+            input_masks = tf.gather_nd(tf.reshape(input_masks, shape=(-1, max_input_size)),mask_passages_indices)
+            input_segments = tf.gather_nd(tf.reshape(input_segments, shape=(-1, max_input_size)),mask_passages_indices)
 
             return input_ids, input_masks, input_segments, mask_passages, mask_passages_indices
 
@@ -713,13 +714,15 @@ if not missing:
             query_matches = tf.cast(tf.reduce_sum(tf.cast(interaction_matrix >= match_threshold, tf.int8), axis=-1)>0,tf.float32)
 
             return query_matches, mask_q
-
-        l1_sentences_score = tf.keras.layers.Dense(1024, activation=activation)
+        if sentence_hidden_size is not None:
+            l1_sentences_score = tf.keras.layers.Dense(sentence_hidden_size, activation=activation)
+            
         l2_sentences_score = tf.keras.layers.Dense(1, activation="sigmoid")
 
-        def sentences_scores_layer(cls_embedding):
-
-            x = l1_sentences_score(cls_embedding)
+        def sentences_scores_layer(x):
+            if sentence_hidden_size is not None:
+                x = l1_sentences_score(x)
+                
             x = l2_sentences_score(x)
 
             return x
@@ -766,5 +769,74 @@ if not missing:
         document_features = document_features_layer(sentence_scores, apriori_scores, mask_passages, mask_passages_indices)
 
         output_list = [document_score(document_features)]
+
+        return tf.keras.models.Model(inputs=[input_ids, input_masks, input_segments, input_mask_passages], outputs=output_list)
+    
+    @transformer_model
+    def simpletransfomer(max_passages = 20,
+                       max_input_size = 128,
+                       bert_train = False,
+                       hidden_size = 768,
+                       checkpoint_name = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract"): 
+
+
+        input_ids = tf.keras.layers.Input((max_passages, max_input_size, ), dtype="int32") #
+        input_masks = tf.keras.layers.Input((max_passages, max_input_size, ), dtype="int32") #
+        input_segments = tf.keras.layers.Input((max_passages, max_input_size, ), dtype="int32") # 
+        input_mask_passages = tf.keras.layers.Input((max_passages,), dtype="bool") # (None, P)
+
+        bert_model = TFBertModel.from_pretrained(checkpoint_name, 
+                                                 output_attentions = False,
+                                                 output_hidden_states = False,
+                                                 return_dict=True,
+                                                 from_pt=True)
+        bert_model.trainable = bert_train
+
+        def skip_padding_data(input_ids, input_masks, input_segments, input_mask_passages):
+            mask_passages = tf.reshape(input_mask_passages, shape=(-1,)) #None, 1
+            mask_passages_indices = tf.cast(tf.where(mask_passages), tf.int32)
+
+            input_ids = tf.gather_nd(tf.reshape(input_ids, shape=(-1, max_input_size)),mask_passages_indices)
+            input_masks = tf.gather_nd(tf.reshape(input_masks, shape=(-1, max_input_size)),mask_passages_indices)
+            input_segments = tf.gather_nd(tf.reshape(input_segments, shape=(-1, max_input_size)),mask_passages_indices)
+
+            return input_ids, input_masks, input_segments, mask_passages, mask_passages_indices
+
+        def bert_contextualized_embeddings(input_ids, input_masks, input_segments):
+
+            output = bert_model([input_ids, input_masks, input_segments])
+
+            return output.pooler_output, output.last_hidden_state[:,1:,:]
+
+        l1_sentences_score = tf.keras.layers.Dense(1024, activation=activation)
+        l2_sentences_score = tf.keras.layers.Dense(1, activation=mish)
+
+        def sentences_scores_layer(cls_embedding):
+
+            #x = l1_sentences_score(cls_embedding)
+            x = l2_sentences_score(cls_embedding)
+
+            return x
+
+        def document_features_layer(sentences_score, mask_passages, mask_passages_indices):
+
+            x = sentences_score
+
+            x = tf.scatter_nd(mask_passages_indices, tf.squeeze(x), tf.shape(mask_passages))
+
+            x = tf.reshape(x, shape=(-1,max_passages,))
+            
+            return tf.expand_dims(tf.math.reduce_max(x, axis=-1),axis=-1)
+
+        ## forward pass
+        data_ids, data_masks, data_segments, mask_passages, mask_passages_indices = skip_padding_data(input_ids, input_masks, input_segments, input_mask_passages)
+
+        cls_embedding, _ = bert_contextualized_embeddings(data_ids, data_masks, data_segments)
+
+        sentence_scores = sentences_scores_layer(cls_embedding)
+
+        document_features = document_features_layer(sentence_scores, mask_passages, mask_passages_indices)
+
+        output_list = [document_features]
 
         return tf.keras.models.Model(inputs=[input_ids, input_masks, input_segments, input_mask_passages], outputs=output_list)
