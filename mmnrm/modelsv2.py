@@ -603,6 +603,146 @@ def sibm2(emb_matrix,
     
     return tf.keras.models.Model(inputs=[input_query, input_doc, input_mask_passages], outputs=output_list)
 
+@savable_model
+def sibm2_wSnippets(emb_matrix,
+         max_q_terms=30,
+         max_passages=20,
+         max_p_terms=30,
+         filters=16,
+         kernel_size=[3,3],
+         match_threshold = 0.99,
+         activation="mish",
+         use_avg_pool=True,
+         use_kmax_avg_pool=True,
+         top_k_list = [3,5,10,15],
+         score_hidden_units = None,
+         semantic_normalized_query_match = False,
+         DEBUG = False):
+    
+    if activation=="mish":
+        activation = mish
+    
+    if score_hidden_units is None:
+        score_hidden_units = top_k_list[-1]
+    
+    kernel_size = tuple(kernel_size)
+        
+    input_query = tf.keras.layers.Input((max_q_terms,), dtype="int32") # (None, Q)
+    input_doc = tf.keras.layers.Input((max_passages, max_p_terms,), dtype="int32") # (None, P, S)
+    input_mask_passages = tf.keras.layers.Input((max_passages,), dtype="bool") # (None, P)
+    
+    semantic_interaction_layer = SemanticInteractions(emb_matrix, return_q_embeddings=True, einsum="bq,bps->bpqs")
+    
+    query_matches_layer = MatchesLayer(match_threshold)
+    
+    ## convolutions
+    conv = tf.keras.layers.Conv2D(filters=filters, kernel_size=kernel_size, padding="SAME", activation=activation)
+    
+    ## pooling
+    max_pool = tf.keras.layers.GlobalMaxPool2D()
+    avg_pool = tf.keras.layers.GlobalAveragePooling2D()
+    kmax_avg_pool = GlobalKmaxAvgPooling2D(kmax=5)
+
+    ## concatenate layer
+    concatenate = tf.keras.layers.Concatenate(axis=-1)
+    
+    ## Dense for sentence
+    setence_dense = tf.keras.layers.Dense(1, activation="sigmoid")
+    
+    
+    apriori_importance_layer = AprioriLayer()
+    
+    def sentence_relevance_nn(x, apriori_importance, mask_passages):
+        
+        x = tf.reshape(x, shape=(-1, max_q_terms, max_p_terms, 1))
+        
+        mask_passages = tf.reshape(mask_passages, shape=(-1,)) #None, 1
+        mask_passages_indices = tf.cast(tf.where(mask_passages), tf.int32)
+        x = tf.gather_nd(x, mask_passages_indices) 
+        
+        ## sentence analysis
+        x = conv(x)
+        signals = [max_pool(x)]
+        
+        if use_avg_pool:
+            signals += [avg_pool(x)]
+            
+        if use_kmax_avg_pool:
+            signals += [kmax_avg_pool(x)]
+        
+        x = concatenate(signals)
+        ## score
+        x = setence_dense(x)
+        
+        scores_before_DEBUG = x
+        
+        x = tf.scatter_nd(mask_passages_indices, tf.squeeze(x), tf.shape(mask_passages))
+        
+        x = tf.reshape(x, shape=(-1,max_passages,))
+        
+        sentence_scores = apriori_importance * x
+        
+        
+        
+        top_k, indeces = tf.math.top_k(sentence_scores, k=top_k_list[-1], sorted=True)
+        
+        
+        sentence_features = [tf.expand_dims(tf.math.reduce_max(sentence_scores, axis=-1),axis=-1), 
+                             tf.expand_dims(tf.math.reduce_sum(sentence_scores, axis=-1),axis=-1), 
+                             tf.expand_dims(tf.math.reduce_mean(sentence_scores, axis=-1),axis=-1),
+                            ]
+        
+        sentence_features += [ tf.expand_dims(tf.math.reduce_mean(top_k[:,:k], axis=-1),axis=-1) for k in top_k_list]
+
+        return tf.concat(sentence_features, axis=-1), indeces, sentence_scores, scores_before_DEBUG
+        #scores, indeces = tf.math.top_k(apriori_importance * x, k=top_k, sorted=True)
+
+            
+        #return scores, indeces, x
+        
+    l1_score = tf.keras.layers.Dense(score_hidden_units, activation=activation)
+    l2_score = tf.keras.layers.Dense(1)
+    
+    def document_score(x):
+        x = l1_score(x)
+        x = l2_score(x)
+        return x
+    
+    
+    final_sentences_score_layer = tf.keras.layers.Dense(1, activation="sigmoid")
+    
+    def sentences_score(sentence_score, doc_score):
+
+        doc_score = tf.expand_dims(tf.repeat(doc_score, max_passages, axis=-1), axis=-1)
+        sentence_score = tf.expand_dims(sentence_score, axis=-1)
+
+        x = tf.concat([sentence_score, doc_score], axis = -1)
+
+        return final_sentences_score_layer(x)
+        
+    
+    interaction_matrix, query_embeddings = semantic_interaction_layer([input_query, input_doc])
+    
+    query_matches = query_matches_layer(interaction_matrix)
+    
+    apriori_importance, query_weigts = apriori_importance_layer([input_query, query_matches, query_embeddings])
+    
+    s_scores, indices, cnn_sentence_scores, scores_before = sentence_relevance_nn(interaction_matrix, apriori_importance, input_mask_passages)
+    
+    doc_score = document_score(s_scores)
+    
+    final_sentence_scores = sentences_score(cnn_sentence_scores, doc_score)
+    
+    output_list = [doc_score, final_sentence_scores]
+    
+    #if return_snippets_score:
+    #    output_list += [s_scores, indices]
+        
+    if DEBUG:
+        output_list += [s_scores, scores_before, apriori_importance, query_weigts, query_matches, cnn_sentence_scores, interaction_matrix]
+    
+    return tf.keras.models.Model(inputs=[input_query, input_doc, input_mask_passages], outputs=output_list)
+
 
 import sys
 import subprocess
