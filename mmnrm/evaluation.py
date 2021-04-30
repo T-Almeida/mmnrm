@@ -80,7 +80,12 @@ def f_map(predictions, expectations, at=10,bioASQ_version = None, use_len=False 
 
 
 class Evaluator():
-        
+    
+    def __init__(self,
+                 run_snippets,
+                 **kwargs):
+        self.run_snippets = run_snippets
+    
     def get_config(self):
         data_json = {
             "class": self.__class__
@@ -97,6 +102,9 @@ class Evaluator():
         
         return cls(**config)
     
+    def hasSnippets(self):
+        return self.run_snippets
+    
     def evaluate(self, ranked_query_docs):
         raise NotImplementedError("This method must be overridden")
         
@@ -105,7 +113,7 @@ class BioASQ_Evaluator(Evaluator):
                  goldstandard,
                  bioasq_version=8,
                  **kwargs):
-        super(Evaluator, self).__init__()
+        super(BioASQ_Evaluator, self).__init__(run_snippets=False)
         self.goldstandard = goldstandard
         self.gs_cached = None
         self.bioasq_version = bioasq_version
@@ -164,7 +172,7 @@ class TREC_Evaluator(Evaluator):
                  goldstandard_trec_file,
                  trec_script_eval_path,
                  **kwargs):
-        super(Evaluator, self).__init__()
+        super(TREC_Evaluator, self).__init__(run_snippets=False)
         self.goldstandard_trec_file = goldstandard_trec_file 
         self.trec_script_eval_path = trec_script_eval_path
         
@@ -217,3 +225,86 @@ class TREC_Evaluator(Evaluator):
         return metrics
 
 TREC_Robust04_Evaluator = TREC_Evaluator
+
+
+class BioASQ_JavaEvaluator(Evaluator):
+    def __init__(self,
+                 goldstandard_bioasq_file,
+                 bioasq_script_eval_path,
+                 write_f = None,
+                 **kwargs):
+        super(BioASQ_JavaEvaluator, self).__init__(run_snippets=True)
+        self.goldstandard_bioasq_file = goldstandard_bioasq_file 
+        self.bioasq_script_eval_path = "$CLASSPATH:"+bioasq_script_eval_path
+        self.write_f = write_f
+        
+    def get_config(self):
+        super_config = super().get_config()
+        
+        data_json = {
+            "goldstandard_bioasq_file": self.goldstandard_bioasq_file,
+            "bioasq_script_eval_path": self.bioasq_script_eval_path,
+            "write_f": self.write_f, 
+        }
+        
+        return dict(data_json, **super_config) #fast dict merge
+    
+    def __metrics_to_dict(self, metrics):
+        
+        metrics = metrics.split(" ")
+        
+        return {
+            "doc_p@10": float(metrics[5]),
+            "doc_r@10": float(metrics[6]),
+            "doc_f1@10": float(metrics[7]),
+            "doc_map@10": float(metrics[8]),
+            "doc_gmap@10": float(metrics[9]),
+            "snippet_p@10": float(metrics[10]),
+            "snippet_r@10": float(metrics[11]),
+            "snippet_f1@10": float(metrics[12]),
+            "snippet_map@10": float(metrics[13]), 
+            "snippet_gmap@10": float(metrics[14]),
+        }
+    
+    def evaluate(self, run):
+        metrics = None
+        temp_dir = tempfile.mkdtemp()
+        
+        try:
+            
+            if self.write_f is not None:
+                path = os.path.join(temp_dir, "retrived.json")
+                self.write_f(run, path)
+            else:
+                path = run
+            
+            
+            # evaluate
+            bioasq_res = subprocess.Popen(
+                ["java",
+                 "-Xmx10G",
+                 "-cp",
+                 self.bioasq_script_eval_path, 
+                 'evaluation.EvaluatorTask1b' ,
+                 '-phaseA',
+                 '-e',
+                 '8', 
+                 self.goldstandard_bioasq_file, 
+                 path],
+                stdout=subprocess.PIPE, shell=False)
+
+            (out, err) = bioasq_res.communicate()
+            bioasq_res = out.decode("utf-8")
+            #print("trec_result")
+            #print(trec_eval_res)
+            
+            metrics = self.__metrics_to_dict(bioasq_res)
+
+        except Exception as e:
+            raise e # maybe handle the exception in the future
+        finally:
+            # always remove the temp directory
+            print("Remove {}".format(temp_dir))
+            shutil.rmtree(temp_dir)
+            
+        return metrics

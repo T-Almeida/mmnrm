@@ -76,12 +76,13 @@ class PairwiseTraining(BaseTraining):
         self.transform_model_inputs_callback = transform_model_inputs_callback
     
     def predict_score(self, inputs):
-        output = self.model.predict(inputs)
+        return self.model.predict(inputs)
+        #output = self.model.predict(inputs)
         
-        if isinstance(self.model.output,list):
-            return output[0]
-        else:
-            return output
+        #if isinstance(self.model.output,list):
+        #    return output[0]
+        #else:
+        #    return output
     
     @tf.function # check if this can reutilize the computational graph for the prediction phase
     def model_score(self, inputs):

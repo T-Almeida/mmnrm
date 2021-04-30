@@ -476,7 +476,11 @@ def sibm(emb_matrix,
     if DEBUG:
         output_list += [s_scores, apriori_importance, query_weigts, query_matches, cnn_sentence_scores, interaction_matrix]
     
-    return tf.keras.models.Model(inputs=[input_query, input_doc], outputs=output_list)
+    model = tf.keras.models.Model(inputs=[input_query, input_doc], outputs=output_list)
+    
+    model.hasSnippets = False
+    
+    return model
 
 
 
@@ -601,7 +605,10 @@ def sibm2(emb_matrix,
     if DEBUG:
         output_list += [s_scores, scores_before, apriori_importance, query_weigts, query_matches, cnn_sentence_scores, interaction_matrix]
     
-    return tf.keras.models.Model(inputs=[input_query, input_doc, input_mask_passages], outputs=output_list)
+    model = tf.keras.models.Model(inputs=[input_query, input_doc, input_mask_passages], outputs=output_list)
+    model.hasSnippets = False
+    
+    return model
 
 @savable_model
 def sibm2_wSnippets(emb_matrix,
@@ -741,7 +748,10 @@ def sibm2_wSnippets(emb_matrix,
     if DEBUG:
         output_list += [s_scores, scores_before, apriori_importance, query_weigts, query_matches, cnn_sentence_scores, interaction_matrix]
     
-    return tf.keras.models.Model(inputs=[input_query, input_doc, input_mask_passages], outputs=output_list)
+    model = tf.keras.models.Model(inputs=[input_query, input_doc, input_mask_passages], outputs=output_list)
+    model.hasSnippets = True
+    
+    return model
 
 
 import sys
@@ -910,7 +920,10 @@ if not missing:
 
         output_list = [document_score(document_features)]
 
-        return tf.keras.models.Model(inputs=[input_ids, input_masks, input_segments, input_mask_passages], outputs=output_list)
+        model = tf.keras.models.Model(inputs=[input_ids, input_masks, input_segments, input_mask_passages], outputs=output_list)
+        model.hasSnippets = False
+        
+        return model
     
     @transformer_model
     def sibmtransformer_wSnippets(max_passages = 20,
@@ -1072,7 +1085,10 @@ if not missing:
         
         output_list = [doc_score, final_sentence_scores]
 
-        return tf.keras.models.Model(inputs=[input_ids, input_masks, input_segments, input_mask_passages], outputs=output_list)
+        model = tf.keras.models.Model(inputs=[input_ids, input_masks, input_segments, input_mask_passages], outputs=output_list)
+        model.hasSnippets = True
+        
+        return model
     
     @transformer_model
     def simpletransfomer(max_passages = 20,

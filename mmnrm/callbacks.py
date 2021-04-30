@@ -2,6 +2,7 @@ import tensorflow as tf
 from tensorflow.keras import backend as K
 
 from mmnrm.utils import save_model_weights, load_model_weights, set_random_seed, save_model
+from mmnrm.bioasq_utils import create_document_run
 
 import numpy as np
 
@@ -194,42 +195,65 @@ class Validation(Callback):
                  output_metrics=["recall_100", "map_cut_20","ndcg_cut_20","P_20"],
                  path_store = "/backup/NIR_BioASQ/best_validation_models",
                  interval_val = 1,
+                 snippet_rank_f = None,
                  **kwargs):
         super(Validation, self).__init__(**kwargs)
         self.validation_collection = validation_collection
         self.test_collection = test_collection
         self.current_best = [[ 0 for _m in range(len(output_metrics))] for _ in range(len(validation_collection))]
-
+        self.snippet_rank_f = snippet_rank_f
         self.output_metrics = output_metrics
         self.path_store = path_store
         self.interval_val = interval_val
         self.count = 0
     
-    def evaluate(self, model_score_fn, collection):
+    def evaluate(self, model, collection):
         generator_Y = collection.generator()
                 
         q_scores = defaultdict(list)
 
         for i, _out in enumerate(generator_Y):
-            query_id, Y, docs_ids, _ = _out
+            query_id, Y, docs_ids, docs_spans = _out
             s_time = time.time()
-            scores = model_score_fn(Y)[:,0].tolist()
+            
+            scores = model.predict(Y)
+
+            if model.hasSnippets:
+                doc_scores = scores[0][:,0].tolist()
+                snippets_scores = scores[1].tolist()
+            else:
+                doc_scores = scores[:,0].tolist()
+                
             if not i%50:
                 print("\rEvaluation {} | avg 50-time {}".format(i, time.time()-s_time), end="\r")
         
-            for i in range(len(scores)):
-
-                #q_scores[query_id].extend(list(zip(docs_ids,scores)))
-                #q_scores[query_id[i]].append({"id":docs_info[i],
-                #                              "score":scores[i]})
-                q_scores[query_id[i]].append((docs_ids[i],scores[i]))
+            for i in range(len(doc_scores)):
+                if collection.evaluator.hasSnippets():
+                    for j in range(len(docs_spans[i])):
+                        docs_spans[i][j]["score"] = snippets_scores[i][j][0]
+                        
+                    q_scores[query_id[i]].append({"id":docs_ids[i],
+                                                  "score":doc_scores[i],
+                                                  "snippets":docs_spans[i]})
+                else:
+                    q_scores[query_id[i]].append((docs_ids[i],doc_scores[i]))
 
         # sort the rankings
-        for query_id in q_scores.keys():
-            q_scores[query_id].sort(key=lambda x:-x[1])
-
+        if collection.evaluator.hasSnippets():
+            for query_id in q_scores.keys():
+                q_scores[query_id].sort(key=lambda x:-x["score"])
+                
+            snippets = self.snippet_rank_f(q_scores)
+            
+            run = create_document_run(collection.query_list, q_scores, snippets=snippets)
+            
+        else:
+            for query_id in q_scores.keys():
+                q_scores[query_id].sort(key=lambda x:-x[1])
+                
+            run = q_scores
         # evaluate
-        return collection.evaluate(q_scores)
+        return collection.evaluate(run)
     
     def on_epoch_start(self, training_obj, epoch):
         if hasattr(self, "model_name"):
@@ -250,7 +274,7 @@ class Validation(Callback):
             metrics = []
             for i,val_collection in enumerate(self.validation_collection):
                 
-                _metrics = self.evaluate(training_obj.predict_score, val_collection)
+                _metrics = self.evaluate(training_obj.model, val_collection)
                 
                 _str = "" # use stringbuilder instead
                 
