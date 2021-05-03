@@ -1045,7 +1045,7 @@ class TrainSnippetsCollectionV2(BaseCollection):
                 y_neg_doc.append(neg_doc)
                 #y_neg_doc_snippet_label.append(neg_doc_snippet_label)
             
-            yield (np.array(y_query), np.array(y_pos_doc), np.array(y_pos_doc_snippet_label), np.array(y_neg_doc))#, np.array(y_neg_doc_snippet_label))
+            yield (y_query, y_pos_doc, y_pos_doc_snippet_label, y_neg_doc)
     
     def get_config(self):
         super_config = super().get_config()

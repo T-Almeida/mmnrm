@@ -235,7 +235,7 @@ class BioASQ_JavaEvaluator(Evaluator):
                  **kwargs):
         super(BioASQ_JavaEvaluator, self).__init__(run_snippets=True)
         self.goldstandard_bioasq_file = goldstandard_bioasq_file 
-        self.bioasq_script_eval_path = "$CLASSPATH:"+bioasq_script_eval_path
+        self.bioasq_script_eval_path = bioasq_script_eval_path
         self.write_f = write_f
         
     def get_config(self):
@@ -284,7 +284,7 @@ class BioASQ_JavaEvaluator(Evaluator):
                 ["java",
                  "-Xmx10G",
                  "-cp",
-                 self.bioasq_script_eval_path, 
+                 "$CLASSPATH:"+self.bioasq_script_eval_path, 
                  'evaluation.EvaluatorTask1b' ,
                  '-phaseA',
                  '-e',

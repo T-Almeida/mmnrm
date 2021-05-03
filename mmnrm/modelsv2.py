@@ -621,6 +621,8 @@ def sibm2_wSnippets(emb_matrix,
          activation="mish",
          use_avg_pool=True,
          use_kmax_avg_pool=True,
+         use_cnn_sentence_scores=False,
+         use_mlp_sentence_scores=False,
          top_k_list = [3,5,10,15],
          score_hidden_units = None,
          semantic_normalized_query_match = False,
@@ -687,6 +689,8 @@ def sibm2_wSnippets(emb_matrix,
         
         x = tf.reshape(x, shape=(-1,max_passages,))
         
+        cnn_sentence_scores = x
+        
         sentence_scores = apriori_importance * x
         
         
@@ -701,7 +705,7 @@ def sibm2_wSnippets(emb_matrix,
         
         sentence_features += [ tf.expand_dims(tf.math.reduce_mean(top_k[:,:k], axis=-1),axis=-1) for k in top_k_list]
 
-        return tf.concat(sentence_features, axis=-1), indeces, sentence_scores, scores_before_DEBUG
+        return tf.concat(sentence_features, axis=-1), indeces, sentence_scores, cnn_sentence_scores, scores_before_DEBUG
         #scores, indeces = tf.math.top_k(apriori_importance * x, k=top_k, sorted=True)
 
             
@@ -715,16 +719,27 @@ def sibm2_wSnippets(emb_matrix,
         x = l2_score(x)
         return x
     
+    final_sentences_score_dense_1 = tf.keras.layers.Dense(3, activation=activation)
+    final_sentences_score_dense_2 = tf.keras.layers.Dense(1, activation="sigmoid")
     
-    final_sentences_score_layer = tf.keras.layers.Dense(1, activation="sigmoid")
+    def final_sentences_score_layer(x):
+        if use_mlp_sentence_scores:
+            x = final_sentences_score_dense_1(x)
+            
+        return final_sentences_score_dense_2(x)
     
-    def sentences_score(sentence_score, doc_score):
+    def sentences_score_layer(sentence_score, cnn_sentence_scores, doc_score):
 
         doc_score = tf.expand_dims(tf.repeat(doc_score, max_passages, axis=-1), axis=-1)
         sentence_score = tf.expand_dims(sentence_score, axis=-1)
-
-        x = tf.concat([sentence_score, doc_score], axis = -1)
-
+        
+        x = [sentence_score, doc_score]
+        
+        if use_cnn_sentence_scores:
+            x += [tf.expand_dims(cnn_sentence_scores, axis=-1)]
+        
+        x = tf.concat(x, axis = -1)
+        
         return final_sentences_score_layer(x)
         
     
@@ -734,11 +749,11 @@ def sibm2_wSnippets(emb_matrix,
     
     apriori_importance, query_weigts = apriori_importance_layer([input_query, query_matches, query_embeddings])
     
-    s_scores, indices, cnn_sentence_scores, scores_before = sentence_relevance_nn(interaction_matrix, apriori_importance, input_mask_passages)
+    s_scores, indices, sentence_scores, cnn_sentence_scores, scores_before = sentence_relevance_nn(interaction_matrix, apriori_importance, input_mask_passages)
     
     doc_score = document_score(s_scores)
     
-    final_sentence_scores = sentences_score(cnn_sentence_scores, doc_score)
+    final_sentence_scores = sentences_score_layer(sentence_scores, cnn_sentence_scores, doc_score)
     
     output_list = [doc_score, final_sentence_scores]
     
