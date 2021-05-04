@@ -948,6 +948,7 @@ if not missing:
                        bert_train = False,
                        hidden_size = 768,
                        sentence_hidden_size = None,
+                       use_transformer_sentence_scores=False,
                        sentences_mlp = False,
                        activation = "mish",
                        top_k_list = [3,5,10,15],
@@ -1042,6 +1043,9 @@ if not missing:
 
             x = tf.reshape(x, shape=(-1,max_passages,))
             
+            sentences_score = tf.scatter_nd(mask_passages_indices, tf.squeeze(sentences_score), tf.shape(mask_passages))
+
+            sentences_score = tf.reshape(sentences_score, shape=(-1,max_passages,))
             
             
             top_k, indices = tf.math.top_k(x, k=top_k_list[-1], sorted=True)
@@ -1053,7 +1057,7 @@ if not missing:
 
             sentence_features += [ tf.expand_dims(tf.math.reduce_mean(top_k[:,:k], axis=-1),axis=-1) for k in top_k_list]
 
-            return tf.concat(sentence_features, axis=-1), x
+            return tf.concat(sentence_features, axis=-1), x, sentences_score
 
 
         l1_score = tf.keras.layers.Dense(max_passages, activation=activation)
@@ -1068,13 +1072,18 @@ if not missing:
             hidden_sentences_score_layer = tf.keras.layers.Dense(2, activation=activation)
         
         final_sentences_score_layer = tf.keras.layers.Dense(1, activation="sigmoid")
-    
-        def sentences_score(sentence_score, doc_score):
+        
+        def sentences_score(sentence_score, transformer_sentence_scores, doc_score):
 
             doc_score = tf.expand_dims(tf.repeat(doc_score, max_passages, axis=-1), axis=-1)
             sentence_score = tf.expand_dims(sentence_score, axis=-1)
-
-            x = tf.concat([sentence_score, doc_score], axis = -1)
+            
+            x = [sentence_score, doc_score]
+            
+            if use_transformer_sentence_scores:
+                x += [tf.expand_dims(transformer_sentence_scores, axis=-1)]
+            
+            x = tf.concat(x, axis = -1)
             
             if sentences_mlp:
                 x = hidden_sentences_score_layer(x)
@@ -1092,11 +1101,11 @@ if not missing:
 
         apriori_scores = apriori_layer([embeddings, query_mask, query_matches])
 
-        document_features, sentence_scores = document_features_layer(sentence_scores, apriori_scores, mask_passages, mask_passages_indices)
+        document_features, sentence_scores, transformer_sentence_scores = document_features_layer(sentence_scores, apriori_scores, mask_passages, mask_passages_indices)
         
         doc_score = document_score(document_features)
         
-        final_sentence_scores = sentences_score(sentence_scores, doc_score)
+        final_sentence_scores = sentences_score(sentence_scores, transformer_sentence_scores, doc_score)
         
         output_list = [doc_score, final_sentence_scores]
 
