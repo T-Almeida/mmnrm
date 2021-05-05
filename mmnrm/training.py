@@ -65,7 +65,7 @@ class BaseTraining():
               step=0,
               profiler_outdir=logdir)
             
-    def train(self, epoch, draw_graph=True):
+    def train(self, epoch, draw_graph=False):
         raise NotImplementedError("This is an abstract class, should not be initialized")
 
 class PairwiseTraining(BaseTraining):

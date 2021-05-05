@@ -623,6 +623,7 @@ def sibm2_wSnippets(emb_matrix,
          use_kmax_avg_pool=True,
          use_cnn_sentence_scores=False,
          use_mlp_sentence_scores=False,
+         use_sentence_unbound=False,
          top_k_list = [3,5,10,15],
          score_hidden_units = None,
          semantic_normalized_query_match = False,
@@ -720,7 +721,10 @@ def sibm2_wSnippets(emb_matrix,
         return x
     
     final_sentences_score_dense_1 = tf.keras.layers.Dense(3, activation=activation)
-    final_sentences_score_dense_2 = tf.keras.layers.Dense(1, activation="sigmoid")
+    if use_sentence_unbound:
+        final_sentences_score_dense_2 = tf.keras.layers.Dense(1)
+    else:
+        final_sentences_score_dense_2 = tf.keras.layers.Dense(1, activation="sigmoid")
     
     def final_sentences_score_layer(x):
         if use_mlp_sentence_scores:
@@ -950,6 +954,7 @@ if not missing:
                        sentence_hidden_size = None,
                        use_transformer_sentence_scores=False,
                        sentences_mlp = False,
+                       use_sentence_unbound=False,
                        activation = "mish",
                        top_k_list = [3,5,10,15],
                        checkpoint_name = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract"): 
@@ -1071,7 +1076,11 @@ if not missing:
         if sentences_mlp:
             hidden_sentences_score_layer = tf.keras.layers.Dense(2, activation=activation)
         
-        final_sentences_score_layer = tf.keras.layers.Dense(1, activation="sigmoid")
+        
+        if use_sentence_unbound:
+            final_sentences_score_layer = tf.keras.layers.Dense(1)
+        else:
+            final_sentences_score_layer = tf.keras.layers.Dense(1, activation="sigmoid")
         
         def sentences_score(sentence_score, transformer_sentence_scores, doc_score):
 
