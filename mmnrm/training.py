@@ -122,7 +122,7 @@ class PairwiseTraining(BaseTraining):
         #tf.print(self.model.trainable_weights[-1])
         
         self.optimizer.apply_gradients(zip(grads, self.model.trainable_weights))
-
+        
         return loss
 
     def evaluate_test_set(self, test_set):
@@ -174,7 +174,7 @@ class PairwiseTraining(BaseTraining):
                 
                 # static TF computational graph for the traning step
                 loss = self.training_step(positive_inputs, negative_inputs, custom_output).numpy()
-                
+
                 #execute callbacks
                 f_time = timer()-s_time
                 for c in self.callbacks:

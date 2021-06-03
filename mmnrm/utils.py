@@ -155,16 +155,19 @@ def save_model(file_name, model):
     # keep using h5py for weights
     save_model_weights(file_name, model)
     
-def load_model(file_name, change_config={}):
+def load_model(file_name, change_config={}, auxiliar_module_source=None):
     
     with open(file_name+".cfg","rb") as f:
         cfg = pickle.load(f)
     
     cfg["model"] = merge_dicts(cfg["model"], change_config)
     
-    # create the model with the correct configuration
-    model = getattr(mmnrm.modelsv2, cfg['func_name'])(**cfg)
-    
+    if auxiliar_module_source is None:
+        # create the model with the correct configuration
+        model = getattr(mmnrm.modelsv2, cfg['func_name'])(**cfg)
+    else:
+        model = getattr(auxiliar_module_source, cfg['func_name'])(**cfg)
+        
     # load weights
     load_model_weights(file_name, model)
     
