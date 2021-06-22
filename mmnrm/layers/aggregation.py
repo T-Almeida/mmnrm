@@ -184,8 +184,8 @@ class QueryTermWeighting(TrainableLayer):
     
 class AprioriLayer(TrainableLayer):
     
-    def __init__(self):
-        super(AprioriLayer, self).__init__()
+    def __init__(self, **kwargs):
+        super(AprioriLayer, self).__init__(**kwargs)
         
         self.qtw_layer = QueryTermWeighting()
         
@@ -204,10 +204,10 @@ class AprioriLayer(TrainableLayer):
         return tf.einsum("bpq,bq->bp", query_matches, query_weights), query_weights
     
 
-class AprioriLayerWmask(TrainableLayer):
+class AprioriLayerWmask(AprioriLayer):
     
-    def __init__(self):
-        super(AprioriLayerWmask, self).__init__()
+    def __init__(self, **kwargs):
+        super(AprioriLayerWmask, self).__init__(**kwargs)
         
         self.qtw_layer = QueryTermWeighting()
         
@@ -225,8 +225,8 @@ class AprioriLayerWmask(TrainableLayer):
     
 class MatchesLayer(TrainableLayer):
     
-    def __init__(self, match_threshold=None):
-        super(MatchesLayer, self).__init__()
+    def __init__(self, match_threshold=None, **kwargs):
+        super(MatchesLayer, self).__init__(**kwargs)
         self.match_threshold = match_threshold
         
     def build(self, input_shape):

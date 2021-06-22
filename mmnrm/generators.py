@@ -6,7 +6,7 @@ from nltk.tokenize.punkt import PunktSentenceTokenizer
 def train_test_generator_for_model(model):
     if model.name == "arcII":
         return _train_test_generator_for_model_full_doc(model)
-    elif model.name in ["UPWM_acrII"]:
+    elif model.name in ["UPWM_acrII", "SimpleUPWM", "LUPWM", "sibm2"]:
         return _train_test_generator_for_model_senteces(model)
     else:
         raise ValueError(f"There aren't any generator that supports the model: {model}")

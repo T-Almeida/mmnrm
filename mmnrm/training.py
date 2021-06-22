@@ -144,10 +144,11 @@ class PairwiseTraining(BaseTraining):
         # evaluate
         return test_set.evaluate(q_scores)
     
-    def train(self, epoch, draw_graph=False, custom_output=None):
+    def train(self, epoch, draw_graph=False, custom_output=None, steps=None):
         
         # create train generator
-        steps = self.train_collection.get_steps()
+        if steps is None:
+            steps = self.train_collection.get_steps()
         generator_X = self.train_collection.generator()
         
         positive_inputs, negative_inputs = next(generator_X)

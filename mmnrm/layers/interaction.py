@@ -324,5 +324,41 @@ class ContextedSemanticInteractions(SemanticBaseInteraction):
         else:
             return interaction_matrix
 
+
+## Interaction layer that wraps other models for the computations
+
+class InteractionModelQueryPassage(tf.keras.layers.Layer):
+    
+    def __init__(self, 
+                 keras_model,
+                 max_q_terms,
+                 max_passages,
+                 max_p_terms,
+                 **kwargs):
         
+        super(InteractionModelQueryPassage, self).__init__(**kwargs)
         
+        self.keras_model = keras_model
+        self.max_q_terms = max_q_terms
+        self.max_passages = max_passages
+        self.max_p_terms = max_p_terms
+    
+    
+    def call(self, x, mask=None):
+        query, document, mask_passages = x 
+        query = tf.expand_dims(query, axis=1)
+        query = tf.repeat(query, self.max_passages, axis=1)
+        query = tf.reshape(query, shape=(-1, self.max_q_terms))
+        document = tf.reshape(document, shape=(-1, self.max_p_terms))
+
+        mask_passages = tf.reshape(mask_passages, shape=(-1,)) #None, 1
+        mask_passages_indices = tf.cast(tf.where(mask_passages), tf.int32)
+        query = tf.gather_nd(query, mask_passages_indices)
+        document = tf.gather_nd(document, mask_passages_indices)
+
+        ## sentence analysis
+        x = self.keras_model([query, document])
+
+        x = tf.scatter_nd(mask_passages_indices, tf.squeeze(x), tf.shape(mask_passages))
+
+        return tf.reshape(x, shape=(-1,self.max_passages,)) #* tf.cast(mask_passages, tf.float32)

@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 from tensorflow.keras import backend as K
 
-from mmnrm.layers.interaction import SemanticInteractions, ExactInteractions
+from mmnrm.layers.interaction import SemanticInteractions, ExactInteractions, InteractionModelQueryPassage
 from mmnrm.layers.local_relevance import MultipleNgramConvs, MaskedSoftmax, SimpleMultipleNgramConvs
 from mmnrm.layers.transformations import *
 from mmnrm.layers.aggregation import *
@@ -15,15 +15,17 @@ def model_from_config(cfg, auxiliar_module_source=None):
     # load the config
     with open(cfg, "rb") as f:
         cfg = pickle.load(f)
+    
+    try:
+        if auxiliar_module_source is not None:
+            return getattr(auxiliar_module_source, cfg['func_name'])(**cfg)
+    except AttributeError as e:
         
-    if auxiliar_module_source is None:
         import sys
         return getattr(sys.modules[__name__], cfg['func_name'])(**cfg)
-    else:
-        return getattr(auxiliar_module_source, cfg['func_name'])(**cfg)
 
     
-def UPWM_mz(f_model):
+def UPWM(f_model=None):
     @wraps(f_model)
     def function_wrapper(emb_matrix, 
                          max_q_terms=30,
@@ -45,98 +47,102 @@ def UPWM_mz(f_model):
 
         if score_hidden_units is None:
             score_hidden_units = top_k_list[-1]
-
+        
+        if f_model is None and use_apriori_layer==False:
+            raise ValueError("use_apriori_layer cannot be false while not f_model is defined")
+        
         ## create the model
         kwargs["input_shapes"] = [(max_q_terms,),(max_p_terms,)]
-        mz_model = f_model(emb_matrix, **kwargs)
+        kwargs["activation"] = activation
+        if f_model is not None:
+            interaction_model = f_model(emb_matrix, **kwargs)
 
-        input_query = tf.keras.layers.Input((max_q_terms,), dtype="int32") # (None, Q)
-        input_doc = tf.keras.layers.Input((max_passages, max_p_terms,), dtype="int32") # (None, P, S)
-        input_mask_passages = tf.keras.layers.Input((max_passages,), dtype="bool") # (None, P)
+        input_query = tf.keras.layers.Input((max_q_terms,), dtype="int32", name="input_query") # (None, Q)
+        input_doc = tf.keras.layers.Input((max_passages, max_p_terms,), dtype="int32", name="input_doc") # (None, P, S)
+        input_mask_passages = tf.keras.layers.Input((max_passages,), dtype="bool", name="input_mask_passages") # (None, P)
         
-        semantic_interaction_layer = SemanticInteractions(emb_matrix, return_q_embeddings=True, einsum="bq,bps->bpqs")
-        
-        query_matches_layer = MatchesLayer(match_threshold)
-        
+        semantic_interaction_layer = SemanticInteractions(emb_matrix, return_q_embeddings=True, einsum="bq,bps->bpqs", name="semantic_interaction_layer")
+                
         ## concatenate layer
         concatenate = tf.keras.layers.Concatenate(axis=-1)
 
         if use_apriori_layer:
-            apriori_importance_layer = AprioriLayer()
+            query_matches_layer = MatchesLayer(match_threshold, name="MatchesLayer")
+            apriori_importance_layer = AprioriLayer(name="AprioriLayer")
         
-        def sentence_relevance_nn(*args):
-            
-            if use_apriori_layer:
-                query, document, apriori_importance, mask_passages = args
+        if f_model is not None and not interaction_model.use_interaction_matrix:
+            interaction_model_layer = InteractionModelQueryPassage(interaction_model, max_q_terms, max_passages, max_p_terms)
+        
+        def combine_sentence_score(sentence_score, apriori_importance):
+            if sentence_score is None:
+                return apriori_importance
+            elif apriori_importance is None:
+                return sentence_score 
             else:
-                query, document, mask_passages = args
-                
-            query = tf.expand_dims(query, axis=1)
-            query = tf.repeat(query, max_passages, axis=1)
-            query = tf.reshape(query, shape=(-1, max_q_terms))
-            document = tf.reshape(document, shape=(-1, max_p_terms))
+                return sentence_score * apriori_importance
+                #return .5*sentence_score + .5*apriori_importance 
             
-            mask_passages = tf.reshape(mask_passages, shape=(-1,)) #None, 1
-            mask_passages_indices = tf.cast(tf.where(mask_passages), tf.int32)
-            query = tf.gather_nd(query, mask_passages_indices)
-            document = tf.gather_nd(document, mask_passages_indices)
-
-            ## sentence analysis
-            x = mz_model([query, document])
-
-            scores_before_DEBUG = x
-
-            x = tf.scatter_nd(mask_passages_indices, tf.squeeze(x), tf.shape(mask_passages))
-
-            x = tf.reshape(x, shape=(-1,max_passages,))
+        def feature_selection(inputs):
+            x, mask_passages = inputs
+            #top_k, indeces = tf.math.top_k(x, k=top_k_list[-1], sorted=True)
             
-            if use_apriori_layer:
-                x = apriori_importance * x
-            else:
-                x = tf.cast(input_mask_passages, tf.float32) * x
-                
-
-            top_k, indeces = tf.math.top_k(x, k=top_k_list[-1], sorted=True)
-
-
+            z_normalize = tf.math.reduce_sum(tf.cast(mask_passages, tf.float32), axis=-1, keepdims=True)
+            
+            
             sentence_features = [tf.expand_dims(tf.math.reduce_max(x, axis=-1),axis=-1), 
-                                 tf.expand_dims(tf.math.reduce_sum(x, axis=-1),axis=-1), 
+                                 #tf.expand_dims(tf.math.reduce_sum(x, axis=-1),axis=-1),
+                                 tf.expand_dims(tf.math.reduce_sum(x, axis=-1),axis=-1)/z_normalize, 
                                  tf.expand_dims(tf.math.reduce_mean(x, axis=-1),axis=-1),
                                 ]
 
-            sentence_features += [ tf.expand_dims(tf.math.reduce_mean(top_k[:,:k], axis=-1),axis=-1) for k in top_k_list]
+            sentence_features += [ tf.expand_dims(tf.math.reduce_mean(tf.math.top_k(x, k=k)[0], axis=-1),axis=-1) for k in top_k_list]
 
-            return tf.concat(sentence_features, axis=-1), indeces, x, scores_before_DEBUG
+            return tf.concat(sentence_features, axis=-1)
         
-        l1_score = tf.keras.layers.Dense(score_hidden_units, activation=activation)
-        l2_score = tf.keras.layers.Dense(1)
+        feature_selection_layer = tf.keras.layers.Lambda(feature_selection, name="feature_selections_layer")
+        
+        l1_score = tf.keras.layers.Dense(score_hidden_units, activation=activation, name="doc_score_mlp1")
+        #l1_drop = tf.keras.layers.Dropout(0.3)
+        l2_score = tf.keras.layers.Dense(1, name="doc_score_mlp2")
 
         def document_score(x):
             x = l1_score(x)
+            #x = l1_drop(x)
             x = l2_score(x)
             return x
         
         interaction_matrix, query_embeddings = semantic_interaction_layer([input_query, input_doc])
         
-        query_matches = query_matches_layer(interaction_matrix)
+        
+        
+        interaction_sentence_scores, apriori_importance = None, None 
+        
+        if f_model is not None:
+            if interaction_model.use_interaction_matrix:
+                interaction_sentence_scores = interaction_model([interaction_matrix, input_mask_passages])
+            else:
+                interaction_sentence_scores = interaction_model_layer([input_query, input_doc, input_mask_passages])
         
         if use_apriori_layer:
+            query_matches = query_matches_layer(interaction_matrix)
             apriori_importance, query_weigts = apriori_importance_layer([input_query, query_matches, query_embeddings])
-            s_scores, indices, cnn_sentence_scores, scores_before = sentence_relevance_nn(input_query,
-                                                                                      input_doc,
-                                                                                      apriori_importance, 
-                                                                                      input_mask_passages)
-        else:
-            s_scores, indices, cnn_sentence_scores, scores_before = sentence_relevance_nn(input_query,
-                                                                                      input_doc, input_mask_passages)
+            
+        sentence_scores = combine_sentence_score(interaction_sentence_scores, apriori_importance)
         
-        output_list = [document_score(s_scores)]
+        doc_features = feature_selection_layer([sentence_scores, input_mask_passages])
+
+        output_list = [document_score(doc_features)]
         
         if return_snippets_score:
-            output_list += [s_scores, indices]
+            output_list += [sentence_scores, indices]
         
         if DEBUG:
-            output_list = [output_list[0], s_scores, indices, cnn_sentence_scores]
+            output_list = [output_list[0], doc_features, sentence_scores]
+            #output_list = [output_list[0], sentence_scores]
+            if f_model is not None:
+                output_list += [interaction_sentence_scores]
+            if use_apriori_layer:
+                output_list += [apriori_importance]
         
         model = tf.keras.models.Model(inputs=[input_query, input_doc, input_mask_passages], outputs=output_list)
         model.hasSnippets = False
@@ -646,8 +652,13 @@ def sibm2(emb_matrix,
          score_hidden_units = None,
          semantic_normalized_query_match = False,
          return_snippets_score = False,
-         DEBUG = False):
+         DEBUG = False,
+         **kwargs):
     
+    if len(kwargs)>0:
+        print("SIBM2 got the additional parameters:")
+        print(kwargs)
+        
     if activation=="mish":
         activation = mish
     
@@ -1050,15 +1061,19 @@ if not missing:
 
             x = tf.reshape(x, shape=(-1,max_passages,))
 
-            top_k, indices = tf.math.top_k(x, k=top_k_list[-1], sorted=True)
-
+            
+            z_normalize = tf.math.reduce_sum(tf.cast(mask_passages, tf.float32), axis=-1, keepdims=True)
+            
+            
             sentence_features = [tf.expand_dims(tf.math.reduce_max(x, axis=-1),axis=-1), 
-                                 tf.expand_dims(tf.math.reduce_sum(x, axis=-1),axis=-1), 
+                                 #tf.expand_dims(tf.math.reduce_sum(x, axis=-1),axis=-1),
+                                 tf.expand_dims(tf.math.reduce_sum(x, axis=-1),axis=-1)/z_normalize, 
                                  tf.expand_dims(tf.math.reduce_mean(x, axis=-1),axis=-1),
                                 ]
 
-            sentence_features += [ tf.expand_dims(tf.math.reduce_mean(top_k[:,:k], axis=-1),axis=-1) for k in top_k_list]
-
+            sentence_features += [ tf.expand_dims(tf.math.reduce_mean(tf.math.top_k(x, k=k)[0], axis=-1),axis=-1) for k in top_k_list]
+            
+            
             return tf.concat(sentence_features, axis=-1)
 
 
